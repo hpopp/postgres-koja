@@ -17,46 +17,30 @@ struct Connection
   cleartext password, or SCRAM-SHA-256 as the server demands), and
   waits for the server to report it is ready for queries.
   """
-  fn connect(config: Config) -> Result<Connection, Error>
-    socket =
-      match TCPSocket.connect(config.host, config.port)
-        Result.Ok(s) -> s
-        Result.Err(e) -> return Result.Err(Error.ConnectFailed(e.message()))
-      end
+  fn connect(config: Config) -> Connection ! Error
+    socket = TCPSocket.connect(config.host, config.port)
+      rescue e -> fail Error.ConnectFailed(e.message())
 
     startup = Message.encode_startup(config.user, config.database)
-
-    match Wire.write_all(socket, startup)
-      Result.Err(e) -> return Result.Err(e)
-      Result.Ok(_) -> ()
-    end
+    try Wire.write_all(socket, startup)
 
     buffer: Binary = <<>>
-
-    match handshake(socket, buffer, config)
-      Result.Ok(leftover) ->
-        Result.Ok(Connection{buffer: leftover, socket: socket})
-
-      Result.Err(e) ->
-        Result.Err(e)
-    end
+    leftover = try handshake(socket, buffer, config)
+    Connection{buffer: leftover, socket: socket}
   end
 
   @doc """
   Runs a single SQL statement and collects its result set. Returns the
   updated connection paired with the query outcome.
   """
-  fn query(self, sql: String) -> Pair<Connection, Result<QueryResult, Error>>
+  fn query(self, sql: String) -> (Connection, Result<QueryResult, Error>)
     match Wire.write_all(self.socket, Message.encode_query(sql))
-      Result.Err(e) -> return Pair.new(self, Result.Err(e))
+      Result.Err(e) -> return (self, Result.Err(e))
       Result.Ok(_) -> ()
     end
 
-    outcome = collect(self.socket, self.buffer, QueryState.empty())
-    Pair.new(
-      Connection{buffer: outcome.first, socket: self.socket},
-      outcome.second,
-    )
+    (buffer, outcome) = collect(self.socket, self.buffer, QueryState.empty())
+    (Connection{buffer: buffer, socket: self.socket}, outcome)
   end
 
   @doc """
@@ -66,81 +50,56 @@ struct Connection
   paired with the query outcome.
   """
   fn execute(self, sql: String, params: List<Option<String>>)
-    -> Pair<Connection, Result<QueryResult, Error>>
+    -> (Connection, Result<QueryResult, Error>)
 
     payload = Message.encode_parse(sql) <> Message.encode_bind(params) <>
       DESCRIBE_PORTAL <> EXECUTE <> SYNC
 
     match Wire.write_all(self.socket, payload)
-      Result.Err(e) -> return Pair.new(self, Result.Err(e))
+      Result.Err(e) -> return (self, Result.Err(e))
       Result.Ok(_) -> ()
     end
 
-    outcome = collect(self.socket, self.buffer, QueryState.empty())
-    Pair.new(
-      Connection{buffer: outcome.first, socket: self.socket},
-      outcome.second,
-    )
+    (buffer, outcome) = collect(self.socket, self.buffer, QueryState.empty())
+    (Connection{buffer: buffer, socket: self.socket}, outcome)
   end
 
   @doc """
   Sends a Terminate message (best effort) and closes the socket.
   """
-  fn close(self) -> Result<(), Error>
+  fn close(self) ! Error
     _ = Wire.write_all(self.socket, TERMINATE)
-
-    match self.socket.close()
-      Result.Ok(_) -> Result.Ok(())
-      Result.Err(e) -> Result.Err(Error.IO(e.message()))
-    end
+    self.socket.close() rescue e -> fail Error.IO(e.message())
   end
 
   # Pumps startup-phase messages until the server reports
   # ReadyForQuery, answering authentication requests along the way.
   priv fn handshake(socket: TCPSocket, buffer: Binary, config: Config)
-    -> Result<Binary, Error>
+    -> Binary ! Error
 
-    pair =
-      match Wire.read_message(socket, buffer)
-        Result.Ok(p) -> p
-        Result.Err(e) -> return Result.Err(e)
-      end
+    (message, leftover) = try Wire.read_message(socket, buffer)
 
-    match Message.decode(pair.first)
+    match Message.decode(message)
       Backend.ReadyForQuery ->
-        Result.Ok(pair.second)
+        leftover
 
       Backend.ErrorResponse(server_error) ->
-        Result.Err(Error.Server(server_error))
+        fail Error.Server(server_error)
 
       Backend.AuthenticationCleartextPassword ->
-        password =
-          match require_password(config)
-            Result.Ok(p) -> p
-            Result.Err(e) -> return Result.Err(e)
-          end
-
-        match Wire.write_all(socket, Message.encode_password(password))
-          Result.Err(e) -> return Result.Err(e)
-          Result.Ok(_) -> ()
-        end
-
-        handshake(socket, pair.second, config)
+        password = try require_password(config)
+        try Wire.write_all(socket, Message.encode_password(password))
+        try handshake(socket, leftover, config)
 
       Backend.AuthenticationSASL(mechanisms) ->
-        leftover =
-          match sasl_authenticate(socket, pair.second, config, mechanisms)
-            Result.Ok(l) -> l
-            Result.Err(e) -> return Result.Err(e)
-          end
-
-        handshake(socket, leftover, config)
+        leftover = try sasl_authenticate(socket, leftover, config, mechanisms)
+        try handshake(socket, leftover, config)
 
       Backend.AuthenticationOther(kind) ->
-        Result.Err(Error.UnsupportedAuthentication(auth_method_name(kind)))
+        fail Error.UnsupportedAuthentication(auth_method_name(kind))
 
       _ ->
-        handshake(socket, pair.second, config)
+        try handshake(socket, leftover, config)
     end
   end
 
@@ -153,17 +112,13 @@ struct Connection
     buffer: Binary,
     config: Config,
     mechanisms: List<String>,
-  ) -> Result<Binary, Error>
+  ) -> Binary ! Error
 
     unless mechanisms.any?(m -> m == "SCRAM-SHA-256")
-      return Result.Err(Error.UnsupportedAuthentication("server offered no supported SASL mechanism"))
+      fail Error.UnsupportedAuthentication("server offered no supported SASL mechanism")
     end
 
-    password =
-      match require_password(config)
-        Result.Ok(p) -> p
-        Result.Err(e) -> return Result.Err(e)
-      end
+    password = try require_password(config)
 
     nonce = Scram.generate_nonce()
     initial = Message.encode_sasl_initial(
@@ -171,96 +126,66 @@ struct Connection
       Scram.first_message("", nonce),
     )
 
-    match Wire.write_all(socket, initial)
-      Result.Err(e) -> return Result.Err(e)
-      Result.Ok(_) -> ()
-    end
+    try Wire.write_all(socket, initial)
 
-    continue_pair =
-      match read_auth_message(socket, buffer)
-        Result.Ok(p) -> p
-        Result.Err(e) -> return Result.Err(e)
-      end
+    (continue_message, continue_buffer) = try read_auth_message(socket, buffer)
 
     server_first =
-      match continue_pair.first
+      match continue_message
         Backend.AuthenticationSASLContinue(text) -> text
-        Backend.ErrorResponse(server_error) ->
-          return Result.Err(Error.Server(server_error))
-        _ -> return Result.Err(Error.Protocol("expected SASL continue message"))
+        Backend.ErrorResponse(server_error) -> fail Error.Server(server_error)
+        _ -> fail Error.Protocol("expected SASL continue message")
       end
 
-    proof =
-      match Scram.proof(password, "", nonce, server_first)
-        Result.Ok(p) -> p
-        Result.Err(e) -> return Result.Err(Error.AuthenticationFailed(e))
-      end
+    proof = Scram.proof(password, "", nonce, server_first)
+      rescue e -> fail Error.AuthenticationFailed(e)
 
-    match Wire.write_all(
+    try Wire.write_all(socket, Message.encode_sasl_response(proof.client_final))
+
+    (final_message, final_buffer) = try read_auth_message(
       socket,
-      Message.encode_sasl_response(proof.client_final),
+      continue_buffer,
     )
-      Result.Err(e) -> return Result.Err(e)
-      Result.Ok(_) -> ()
-    end
-
-    final_pair =
-      match read_auth_message(socket, continue_pair.second)
-        Result.Ok(p) -> p
-        Result.Err(e) -> return Result.Err(e)
-      end
 
     server_final =
-      match final_pair.first
+      match final_message
         Backend.AuthenticationSASLFinal(text) -> text
-        Backend.ErrorResponse(server_error) ->
-          return Result.Err(Error.Server(server_error))
-        _ -> return Result.Err(Error.Protocol("expected SASL final message"))
+        Backend.ErrorResponse(server_error) -> fail Error.Server(server_error)
+        _ -> fail Error.Protocol("expected SASL final message")
       end
 
-    match Scram.verify_server_final(server_final, proof.server_signature)
-      Result.Ok(_) -> Result.Ok(final_pair.second)
-      Result.Err(e) -> Result.Err(Error.AuthenticationFailed(e))
-    end
+    Scram.verify_server_final(server_final, proof.server_signature)
+      rescue e -> fail Error.AuthenticationFailed(e)
+
+    final_buffer
   end
 
   # Reads and decodes one message during the SASL exchange.
   priv fn read_auth_message(socket: TCPSocket, buffer: Binary)
-    -> Result<Pair<Backend, Binary>, Error>
+    -> (Backend, Binary) ! Error
 
-    match Wire.read_message(socket, buffer)
-      Result.Ok(pair) ->
-        Result.Ok(Pair.new(Message.decode(pair.first), pair.second))
-
-      Result.Err(e) ->
-        Result.Err(e)
-    end
+    (message, leftover) = try Wire.read_message(socket, buffer)
+    (Message.decode(message), leftover)
   end
 
-  priv fn require_password(config: Config) -> Result<String, Error>
-    match config.password
-      Option.Some(password) ->
-        Result.Ok(password)
-
-      Option.None ->
-        Result.Err(Error.AuthenticationFailed("server requested a password but none was configured"))
-    end
+  priv fn require_password(config: Config) -> String ! Error
+    try config.password.or_err(
+      Error.AuthenticationFailed("server requested a password but none was configured"),
+    )
   end
 
   priv fn collect(socket: TCPSocket, buffer: Binary, state: QueryState)
-    -> Pair<Binary, Result<QueryResult, Error>>
+    -> (Binary, Result<QueryResult, Error>)
 
-    pair =
+    (message, leftover) =
       match Wire.read_message(socket, buffer)
         Result.Ok(p) -> p
-        Result.Err(e) -> return Pair.new(buffer, Result.Err(e))
+        Result.Err(e) -> return (buffer, Result.Err(e))
       end
 
-    leftover = pair.second
-
-    match Message.decode(pair.first)
+    match Message.decode(message)
       Backend.ReadyForQuery ->
-        Pair.new(leftover, state.finish())
+        (leftover, state.finish())
 
       Backend.RowDescription(fields) ->
         collect(socket, leftover, state.with_fields(fields))

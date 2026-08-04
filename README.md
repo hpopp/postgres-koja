@@ -38,10 +38,9 @@ conn =
   end
 
 # Simple query. The connection is a value: rebind the returned copy.
-outcome = conn.query("SELECT id, name FROM users")
-conn = outcome.first
+(conn, outcome) = conn.query("SELECT id, name FROM users")
 
-match outcome.second
+match outcome
   Result.Ok(result) ->
     # result.fields: List<String>
     # result.rows:   List<List<Option<String>>> (None = SQL NULL)
@@ -55,8 +54,7 @@ end
 # Parameterized query via the extended protocol. Parameters are text;
 # cast them in SQL. Option.None binds SQL NULL.
 params: List<Option<String>> = [Option.Some("42")]
-outcome = conn.execute("SELECT name FROM users WHERE id = $1::int", params)
-conn = outcome.first
+(conn, _) = conn.execute("SELECT name FROM users WHERE id = $1::int", params)
 
 _ = conn.close()
 ```

@@ -33,7 +33,10 @@ struct ScramTest
       return Result.Err("server signature mismatch: got #{proof.server_signature}")
     end
 
-    Scram.verify_server_final("v=" <> expected, proof.server_signature)
+    match Scram.verify_server_final("v=" <> expected, proof.server_signature)
+      Result.Ok(_) -> Result.Ok(true)
+      Result.Err(e) -> Result.Err(e)
+    end
   end
 
   @test "rejects a wrong server signature"

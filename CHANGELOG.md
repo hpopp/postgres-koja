@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0] - 2026-08-03
+
+Requires Koja 0.16.
+
+- **Breaking change.** `Connection.query` and `Connection.execute` now return an anonymous tuple `(Connection, Result<QueryResult, Error>)` instead of `Pair`. Destructure with `(conn, outcome) = conn.query(sql)`.
+- **Breaking change.** The manifest name is now lowercase `postgres`, matching the Koja 0.16 package naming contract. Update the dependency key in `koja.toml`.
+
 ## [0.1.0] - 2026-07-15
 
 Initial release.
