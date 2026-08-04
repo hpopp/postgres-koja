@@ -15,11 +15,11 @@ struct IntegrationTest
         Result.Err(e) -> return Result.Err(e)
       end
 
-    outcome = conn.query("SELECT 1 AS one, 'two' AS two")
-    _ = outcome.first.close()
+    (conn, outcome) = conn.query("SELECT 1 AS one, 'two' AS two")
+    _ = conn.close()
 
     result =
-      match outcome.second
+      match outcome
         Result.Ok(r) -> r
         Result.Err(e) -> return Result.Err(e.message())
       end
@@ -61,11 +61,11 @@ struct IntegrationTest
         Result.Err(e) -> return Result.Err(e)
       end
 
-    outcome = conn.query("SELECT NULL AS nothing")
-    _ = outcome.first.close()
+    (conn, outcome) = conn.query("SELECT NULL AS nothing")
+    _ = conn.close()
 
     result =
-      match outcome.second
+      match outcome
         Result.Ok(r) -> r
         Result.Err(e) -> return Result.Err(e.message())
       end
@@ -84,10 +84,11 @@ struct IntegrationTest
         Result.Err(e) -> return Result.Err(e)
       end
 
-    created = conn.query("CREATE TEMP TABLE driver_test (id INT, label TEXT)")
-    conn = created.first
+    (conn, created) = conn.query(
+      "CREATE TEMP TABLE driver_test (id INT, label TEXT)",
+    )
 
-    match IntegrationTest.expect_tag(created.second, "CREATE TABLE")
+    match IntegrationTest.expect_tag(created, "CREATE TABLE")
       Result.Err(e) ->
         _ = conn.close()
         return Result.Err(e)
@@ -96,12 +97,11 @@ struct IntegrationTest
         ()
     end
 
-    inserted = conn.query(
+    (conn, inserted) = conn.query(
       "INSERT INTO driver_test VALUES (7, 'seven'), (8, NULL)",
     )
-    conn = inserted.first
 
-    match IntegrationTest.expect_tag(inserted.second, "INSERT 0 2")
+    match IntegrationTest.expect_tag(inserted, "INSERT 0 2")
       Result.Err(e) ->
         _ = conn.close()
         return Result.Err(e)
@@ -110,11 +110,11 @@ struct IntegrationTest
         ()
     end
 
-    selected = conn.query("SELECT label FROM driver_test ORDER BY id")
-    _ = selected.first.close()
+    (conn, selected) = conn.query("SELECT label FROM driver_test ORDER BY id")
+    _ = conn.close()
 
     result =
-      match selected.second
+      match selected
         Result.Ok(r) -> r
         Result.Err(e) -> return Result.Err(e.message())
       end
@@ -147,10 +147,10 @@ struct IntegrationTest
         Result.Err(e) -> return Result.Err(e)
       end
 
-    outcome = conn.query("SELEC 1")
-    _ = outcome.first.close()
+    (conn, outcome) = conn.query("SELEC 1")
+    _ = conn.close()
 
-    match outcome.second
+    match outcome
       Result.Ok(_) ->
         Result.Err("expected a syntax error, got a result")
 
@@ -230,11 +230,11 @@ struct IntegrationTest
       end
 
     params: List<Option<String>> = [Option.Some("40"), Option.Some("2")]
-    outcome = conn.execute("SELECT $1::int + $2::int AS total", params)
-    _ = outcome.first.close()
+    (conn, outcome) = conn.execute("SELECT $1::int + $2::int AS total", params)
+    _ = conn.close()
 
     result =
-      match outcome.second
+      match outcome
         Result.Ok(r) -> r
         Result.Err(e) -> return Result.Err(e.message())
       end
@@ -263,13 +263,12 @@ struct IntegrationTest
       end
 
     no_params: List<Option<String>> = List.new()
-    created = conn.execute(
+    (conn, created) = conn.execute(
       "CREATE TEMP TABLE exec_test (id INT, label TEXT)",
       no_params,
     )
-    conn = created.first
 
-    match IntegrationTest.expect_tag(created.second, "CREATE TABLE")
+    match IntegrationTest.expect_tag(created, "CREATE TABLE")
       Result.Err(e) ->
         _ = conn.close()
         return Result.Err(e)
@@ -279,13 +278,12 @@ struct IntegrationTest
     end
 
     insert_params: List<Option<String>> = [Option.Some("1"), Option.None]
-    inserted = conn.execute(
+    (conn, inserted) = conn.execute(
       "INSERT INTO exec_test VALUES ($1::int, $2::text)",
       insert_params,
     )
-    conn = inserted.first
 
-    match IntegrationTest.expect_tag(inserted.second, "INSERT 0 1")
+    match IntegrationTest.expect_tag(inserted, "INSERT 0 1")
       Result.Err(e) ->
         _ = conn.close()
         return Result.Err(e)
@@ -295,14 +293,14 @@ struct IntegrationTest
     end
 
     select_params: List<Option<String>> = [Option.Some("1")]
-    selected = conn.execute(
+    (conn, selected) = conn.execute(
       "SELECT label FROM exec_test WHERE id = $1::int",
       select_params,
     )
-    _ = selected.first.close()
+    _ = conn.close()
 
     result =
-      match selected.second
+      match selected
         Result.Ok(r) -> r
         Result.Err(e) -> return Result.Err(e.message())
       end
@@ -326,10 +324,10 @@ struct IntegrationTest
       end
 
     no_params: List<Option<String>> = List.new()
-    outcome = conn.execute("SELECT * FROM missing_table", no_params)
-    _ = outcome.first.close()
+    (conn, outcome) = conn.execute("SELECT * FROM missing_table", no_params)
+    _ = conn.close()
 
-    match outcome.second
+    match outcome
       Result.Ok(_) ->
         Result.Err("expected an error for a missing table")
 
@@ -354,11 +352,11 @@ struct IntegrationTest
             e.message())
       end
 
-    outcome = conn.query("SELECT current_user")
-    _ = outcome.first.close()
+    (conn, outcome) = conn.query("SELECT current_user")
+    _ = conn.close()
 
     result =
-      match outcome.second
+      match outcome
         Result.Ok(r) -> r
         Result.Err(e) -> return Result.Err(e.message())
       end

@@ -36,12 +36,12 @@ struct MessageTest
 
       Option.Some(want) ->
         match Wire.take_cstring(data)
-          Option.Some(pair) ->
-            unless pair.first == want
-              return Result.Err("expected `#{want}`, got `#{pair.first}`")
+          Option.Some((actual, rest)) ->
+            unless actual == want
+              return Result.Err("expected `#{want}`, got `#{actual}`")
             end
 
-            MessageTest.check_cstrings(pair.second, expected, index + 1)
+            MessageTest.check_cstrings(rest, expected, index + 1)
 
           Option.None ->
             Result.Err("startup params ended before `#{want}`")
@@ -64,10 +64,10 @@ struct MessageTest
         end
 
         match Wire.take_cstring(payload)
-          Option.Some(pair) ->
-            pair.first == "SELECT 1"
+          Option.Some((sql, _)) ->
+            sql == "SELECT 1"
               ? Result.Ok(true)
-              : Result.Err("expected `SELECT 1`, got `#{pair.first}`")
+              : Result.Err("expected `SELECT 1`, got `#{sql}`")
 
           Option.None ->
             Result.Err("payload is not a NUL-terminated string")
@@ -210,29 +210,29 @@ struct MessageTest
 
         # Body: empty statement name, the SQL text, then zero
         # pre-declared parameter types.
-        name_pair =
+        (name, rest) =
           match Wire.take_cstring(body)
             Option.Some(p) -> p
             Option.None -> return Result.Err("missing statement name")
           end
 
-        unless name_pair.first == ""
-          return Result.Err("expected unnamed statement, got `#{name_pair.first}`")
+        unless name == ""
+          return Result.Err("expected unnamed statement, got `#{name}`")
         end
 
-        sql_pair =
-          match Wire.take_cstring(name_pair.second)
+        (sql, rest) =
+          match Wire.take_cstring(rest)
             Option.Some(p) -> p
             Option.None -> return Result.Err("missing SQL text")
           end
 
-        unless sql_pair.first == "SELECT $1"
-          return Result.Err("expected `SELECT $1`, got `#{sql_pair.first}`")
+        unless sql == "SELECT $1"
+          return Result.Err("expected `SELECT $1`, got `#{sql}`")
         end
 
-        sql_pair.second == <<0::16>>
+        rest == <<0::16>>
           ? Result.Ok(true)
-          : Result.Err("expected zero parameter types, got #{sql_pair.second}")
+          : Result.Err("expected zero parameter types, got #{rest}")
 
       _ ->
         Result.Err("parse message shorter than its header")

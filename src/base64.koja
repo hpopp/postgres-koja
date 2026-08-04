@@ -33,7 +33,7 @@ priv struct Base64
     end
   end
 
-  fn decode(text: String) -> Result<Binary, String>
+  fn decode(text: String) -> Binary ! String
     data = text.to_binary()
     size = data.byte_size()
     out: Binary = <<>>
@@ -41,68 +41,64 @@ priv struct Base64
 
     while i < size
       if i + 4 > size
-        return Result.Err("truncated base64 input")
+        fail "truncated base64 input"
       end
 
-      chunk =
-        match decode_quad(
-          sextet(Wire.byte_at(data, i)),
-          sextet(Wire.byte_at(data, i + 1)),
-          sextet(Wire.byte_at(data, i + 2)),
-          sextet(Wire.byte_at(data, i + 3)),
-          i + 4 == size,
-        )
-          Result.Ok(c) -> c
-          Result.Err(e) -> return Result.Err(e)
-        end
+      chunk = try decode_quad(
+        sextet(Wire.byte_at(data, i)),
+        sextet(Wire.byte_at(data, i + 1)),
+        sextet(Wire.byte_at(data, i + 2)),
+        sextet(Wire.byte_at(data, i + 3)),
+        i + 4 == size,
+      )
 
       out = out <> chunk
       i += 4
     end
 
-    Result.Ok(out)
+    out
   end
 
   # Decodes one 4-character group. Padding may only appear in the last
   # group, as `xx==` (one byte) or `xxx=` (two bytes).
   priv fn decode_quad(s0: Int, s1: Int, s2: Int, s3: Int, last: Bool)
-    -> Result<Binary, String>
+    -> Binary ! String
 
     if s0 < 0 or s1 < 0
-      return Result.Err("invalid base64 character")
+      fail "invalid base64 character"
     end
 
     n = s0.bsl(18).bor(s1.bsl(12))
 
     if s2 == BASE64_PAD
       unless s3 == BASE64_PAD and last
-        return Result.Err("invalid base64 padding")
+        fail "invalid base64 padding"
       end
 
-      return Result.Ok(<<(n.bsr(16))::8>>)
+      return <<(n.bsr(16))::8>>
     end
 
     if s2 == BASE64_INVALID
-      return Result.Err("invalid base64 character")
+      fail "invalid base64 character"
     end
 
     n = n.bor(s2.bsl(6))
 
     if s3 == BASE64_PAD
       unless last
-        return Result.Err("invalid base64 padding")
+        fail "invalid base64 padding"
       end
 
-      return Result.Ok(<<(n.bsr(16))::8, (n.bsr(8).band(255))::8>>)
+      return <<(n.bsr(16))::8, (n.bsr(8).band(255))::8>>
     end
 
     if s3 == BASE64_INVALID
-      return Result.Err("invalid base64 character")
+      fail "invalid base64 character"
     end
 
     n = n.bor(s3)
 
-    Result.Ok(<<(n.bsr(16))::8, (n.bsr(8).band(255))::8, (n.band(255))::8>>)
+    <<(n.bsr(16))::8, (n.bsr(8).band(255))::8, (n.band(255))::8>>
   end
 
   priv fn sextet(byte: Int) -> Int

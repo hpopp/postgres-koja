@@ -51,16 +51,12 @@ priv struct Scram
     username: String,
     client_nonce: String,
     server_first: String,
-  ) -> Result<ScramProof, String>
+  ) -> ScramProof ! String
 
-    parsed =
-      match parse_server_first(server_first)
-        Result.Ok(p) -> p
-        Result.Err(e) -> return Result.Err(e)
-      end
+    parsed = try parse_server_first(server_first)
 
     unless parsed.nonce.starts_with?(client_nonce)
-      return Result.Err("server nonce does not extend the client nonce")
+      fail "server nonce does not extend the client nonce"
     end
 
     salted = hi(password.to_binary(), parsed.salt, parsed.iterations)
@@ -77,33 +73,31 @@ priv struct Scram
     server_key = HMAC.sha256(salted, "Server Key".to_binary())
     server_signature = HMAC.sha256(server_key, auth_message.to_binary())
 
-    Result.Ok(ScramProof{
+    ScramProof{
       client_final: without_proof <> ",p=" <> Base64.encode(client_proof),
       server_signature: Base64.encode(server_signature),
-    })
+    }
   end
 
   # Checks the server-final-message (`v=<base64 signature>`) against
   # the signature computed during `proof`.
   fn verify_server_final(server_final: String, expected_signature: String)
-    -> Result<Bool, String>
+    ! String
 
     unless server_final.starts_with?("v=")
-      return Result.Err("malformed server-final-message: " <> server_final)
+      fail "malformed server-final-message: #{server_final}"
     end
 
     signature = server_final.slice(
       Range{start: 2, stop: server_final.length() - 1},
     )
 
-    signature == expected_signature
-      ? Result.Ok(true)
-      : Result.Err("server signature verification failed")
+    unless signature == expected_signature
+      fail "server signature verification failed"
+    end
   end
 
-  priv fn parse_server_first(server_first: String)
-    -> Result<ServerFirst, String>
-
+  priv fn parse_server_first(server_first: String) -> ServerFirst ! String
     nonce = ""
     salt_b64 = ""
     iterations_text = ""
@@ -123,27 +117,19 @@ priv struct Scram
     end
 
     if nonce == "" or salt_b64 == "" or iterations_text == ""
-      return Result.Err("malformed server-first-message: " <> server_first)
+      fail "malformed server-first-message: #{server_first}"
     end
 
-    salt =
-      match Base64.decode(salt_b64)
-        Result.Ok(s) -> s
-        Result.Err(e) -> return Result.Err("invalid salt: " <> e)
-      end
+    salt = Base64.decode(salt_b64) rescue e -> fail "invalid salt: #{e}"
 
-    iterations =
-      match iterations_text.to_int()
-        Result.Ok(i) -> i
-        Result.Err(_) ->
-          return Result.Err("invalid iteration count: " <> iterations_text)
-      end
+    iterations = iterations_text.to_int()
+      rescue _ -> fail "invalid iteration count: #{iterations_text}"
 
     if iterations < 1
-      return Result.Err("invalid iteration count: " <> iterations_text)
+      fail "invalid iteration count: #{iterations_text}"
     end
 
-    Result.Ok(ServerFirst{iterations: iterations, nonce: nonce, salt: salt})
+    ServerFirst{iterations: iterations, nonce: nonce, salt: salt}
   end
 
   priv fn attribute_value(part: String) -> String

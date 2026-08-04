@@ -150,7 +150,7 @@ priv struct Message
 
   priv fn decode_auth(body: Binary) -> Backend
     match Wire.take_u32(body)
-      Option.Some(pair) -> auth_request(pair.first, pair.second)
+      Option.Some((code, rest)) -> auth_request(code, rest)
       Option.None -> Backend.Other
     end
   end
@@ -174,9 +174,9 @@ priv struct Message
 
     while rest.byte_size() > 1
       match Wire.take_cstring(rest)
-        Option.Some(pair) ->
-          mechanisms = mechanisms.append(pair.first)
-          rest = pair.second
+        Option.Some((mechanism, remaining)) ->
+          mechanisms = mechanisms.append(mechanism)
+          rest = remaining
 
         Option.None ->
           return Backend.AuthenticationSASL(mechanisms)
@@ -202,7 +202,7 @@ priv struct Message
 
   priv fn decode_command_complete(body: Binary) -> Backend
     match Wire.take_cstring(body)
-      Option.Some(pair) -> Backend.CommandComplete(pair.first)
+      Option.Some((command, _)) -> Backend.CommandComplete(command)
       Option.None -> Backend.CommandComplete("")
     end
   end
@@ -222,8 +222,8 @@ priv struct Message
 
       <<field::8, rest: Binary>> ->
         match Wire.take_cstring(rest)
-          Option.Some(pair) ->
-            scan_error(pair.second, apply_error_field(acc, field, pair.first))
+          Option.Some((value, remaining)) ->
+            scan_error(remaining, apply_error_field(acc, field, value))
 
           Option.None ->
             acc
@@ -259,8 +259,8 @@ priv struct Message
     fields: List<String> = List.new()
 
     match Wire.take_u16(body)
-      Option.Some(pair) ->
-        Backend.RowDescription(read_fields(pair.second, pair.first, fields))
+      Option.Some((count, rest)) ->
+        Backend.RowDescription(read_fields(rest, count, fields))
 
       Option.None ->
         Backend.RowDescription(fields)
@@ -275,9 +275,9 @@ priv struct Message
     end
 
     match Wire.take_cstring(body)
-      Option.Some(pair) ->
-        tail = Wire.split_at(pair.second, 18).second
-        read_fields(tail, remaining - 1, acc.append(pair.first))
+      Option.Some((name, rest)) ->
+        (_, tail) = Wire.split_at(rest, 18)
+        read_fields(tail, remaining - 1, acc.append(name))
 
       Option.None ->
         acc
@@ -288,8 +288,8 @@ priv struct Message
     columns: List<Option<String>> = List.new()
 
     match Wire.take_u16(body)
-      Option.Some(pair) ->
-        Backend.DataRow(read_columns(pair.second, pair.first, columns))
+      Option.Some((count, rest)) ->
+        Backend.DataRow(read_columns(rest, count, columns))
 
       Option.None ->
         Backend.DataRow(columns)
@@ -304,22 +304,14 @@ priv struct Message
     end
 
     match Wire.take_u32(body)
-      Option.Some(pair) ->
-        if pair.first == NULL_VALUE
-          return read_columns(
-            pair.second,
-            remaining - 1,
-            acc.append(Option.None),
-          )
+      Option.Some((length, rest)) ->
+        if length == NULL_VALUE
+          return read_columns(rest, remaining - 1, acc.append(Option.None))
         end
 
-        split = Wire.split_at(pair.second, pair.first)
+        (column, tail) = Wire.split_at(rest, length)
 
-        read_columns(
-          split.second,
-          remaining - 1,
-          acc.append(split.first.to_string().ok()),
-        )
+        read_columns(tail, remaining - 1, acc.append(column.to_string().ok()))
 
       Option.None ->
         acc
