@@ -9,9 +9,6 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  KOJA_VERSION: 0.16.0
-
 jobs:
   prettier:
     name: Prettier
@@ -23,30 +20,20 @@ jobs:
         run: npx prettier@latest --check .
 
   test:
-    name: Test (${{ matrix.target }})
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-24.04
-            target: linux-x86_64
-          - os: ubuntu-24.04-arm
-            target: linux-arm64
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@v6
 
       - name: Install koja
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          name="koja-v${KOJA_VERSION}-${{ matrix.target }}"
-          gh release download "v${KOJA_VERSION}" --repo koja-lang/koja \
-            --pattern "${name}.tar.gz" --pattern "${name}.tar.gz.sha256"
-          sha256sum -c "${name}.tar.gz.sha256"
-          tar -xzf "${name}.tar.gz"
-          echo "$PWD/${name}" >> "$GITHUB_PATH"
+        uses: koja-lang/setup-koja@v1
+        with:
+          koja-version: 0.16.0
 
       - name: Koja format check
         run: git ls-files '*.koja' | xargs koja format --check
