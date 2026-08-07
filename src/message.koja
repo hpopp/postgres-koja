@@ -1,23 +1,23 @@
 # Postgres v3 wire-protocol message encoding and decoding.
 #
-# Encoding builds each frame as a single binary literal, splicing
+# Encoding builds each frame as a single binary literal and splices
 # computed payloads in. Decoding strips the 5-byte header and walks
-# the body with the cursor helpers in `Wire`. Only the message types
-# the driver needs are modeled. Everything else decodes to
+# the body with the cursor helpers in `Wire`. The driver models only
+# the message types it needs. Everything else decodes to
 # `Backend.Other`.
 
 # A Describe (`D`) frame for the unnamed portal (a `P` selector and
-# an empty portal name), so the server sends RowDescription (or
+# an empty portal name). It makes the server send RowDescription (or
 # NoData) before the rows.
 priv const DESCRIBE_PORTAL: Binary = <<0x44, 6::32, 0x50, 0>>
-# An Execute (`E`) frame running the unnamed portal (empty name)
+# An Execute (`E`) frame that runs the unnamed portal (empty name)
 # with no row limit.
 priv const EXECUTE: Binary = <<0x45, 9::32, 0, 0::32>>
 priv const NULL_VALUE: Int = 4294967295
 priv const PROTOCOL_VERSION: Int = 196608
-# A Sync (`S`) frame closing the extended-protocol cycle.
+# A Sync (`S`) frame that closes the extended-protocol cycle.
 priv const SYNC: Binary = <<0x53, 4::32>>
-# A Terminate (`X`) frame announcing a clean shutdown.
+# A Terminate (`X`) frame that announces a clean shutdown.
 priv const TERMINATE: Binary = <<0x58, 4::32>>
 
 priv enum Backend
@@ -44,7 +44,7 @@ priv enum Backend
 end
 
 priv struct Message
-  # Builds a StartupMessage announcing the user and database. It
+  # Builds a StartupMessage that announces the user and database. It
   # carries no leading type byte, only a length prefix.
   fn encode_startup(user: String, database: String) -> Binary
     params = <<
@@ -55,20 +55,20 @@ priv struct Message
     <<(body.byte_size() + 4)::32, body>>
   end
 
-  # Builds a simple Query (`Q`) message wrapping the given SQL text.
+  # Builds a simple Query (`Q`) message that wraps the given SQL text.
   fn encode_query(sql: String) -> Binary
     payload = cstring(sql)
     <<0x51, (payload.byte_size() + 4)::32, payload>>
   end
 
-  # Builds a PasswordMessage (`p`) carrying a cleartext password.
+  # Builds a PasswordMessage (`p`) that carries a cleartext password.
   fn encode_password(password: String) -> Binary
     payload = cstring(password)
     <<0x70, (payload.byte_size() + 4)::32, payload>>
   end
 
-  # Builds a SASLInitialResponse (`p`) carrying the mechanism name
-  # plus the length-prefixed client-first-message.
+  # Builds a SASLInitialResponse (`p`) that carries the mechanism
+  # name and the length-prefixed client-first-message.
   fn encode_sasl_initial(mechanism: String, response: String) -> Binary
     response_bytes = response.to_binary()
     payload = <<
@@ -78,7 +78,8 @@ priv struct Message
     <<0x70, (payload.byte_size() + 4)::32, payload>>
   end
 
-  # Builds a SASLResponse (`p`) carrying the raw client-final-message.
+  # Builds a SASLResponse (`p`) that carries the raw
+  # client-final-message.
   fn encode_sasl_response(response: String) -> Binary
     payload = response.to_binary()
     <<0x70, (payload.byte_size() + 4)::32, payload>>
@@ -91,7 +92,7 @@ priv struct Message
     <<0x50, (body.byte_size() + 4)::32, body>>
   end
 
-  # Builds a Bind (`B`) message binding text-format parameters to
+  # Builds a Bind (`B`) message that binds text-format parameters to
   # the unnamed statement and portal, with text-format results.
   fn encode_bind(params: List<Option<String>>) -> Binary
     body = <<
@@ -167,7 +168,7 @@ priv struct Message
   end
 
   # The AuthenticationSASL body is a list of NUL-terminated mechanism
-  # names ended by an empty string.
+  # names that ends with an empty string.
   priv fn decode_sasl_mechanisms(body: Binary) -> Backend
     mechanisms: List<String> = List.new()
     rest = body
@@ -186,8 +187,8 @@ priv struct Message
     Backend.AuthenticationSASL(mechanisms)
   end
 
-  # SASLContinue/SASLFinal payloads are raw bytes but always printable
-  # SCRAM attribute text.
+  # SASLContinue and SASLFinal payloads are raw bytes but always
+  # printable SCRAM attribute text.
   priv fn sasl_payload(body: Binary, continuing: Bool) -> Backend
     match body.to_string()
       Result.Ok(text) ->
@@ -212,8 +213,8 @@ priv struct Message
     Backend.ErrorResponse(scan_error(body, empty))
   end
 
-  # Walks the ErrorResponse field list (one-byte field tag followed by
-  # a NUL-terminated value, terminated by a zero byte), keeping the
+  # Walks the ErrorResponse field list (a one-byte field tag followed
+  # by a NUL-terminated value, with a zero byte at the end). Keeps the
   # severity (`S`), SQLSTATE code (`C`), and message (`M`) fields.
   priv fn scan_error(body: Binary, acc: ServerError) -> ServerError
     match body

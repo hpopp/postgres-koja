@@ -2,11 +2,12 @@ alias Crypto.HMAC
 alias Crypto.SHA256
 
 # SCRAM-SHA-256 client per RFC 5802/7677, without channel binding
-# (gs2 header `n,,`). Password normalization (SASLprep) is not
-# applied; ASCII passwords work, exotic Unicode passwords may not.
+# (gs2 header `n,,`). The client does not apply password
+# normalization (SASLprep). ASCII passwords work, exotic Unicode
+# passwords may not.
 #
 # `first_bare` and `proof` are pure so the RFC 7677 example vectors
-# can drive them in unit tests; the connection layer supplies a
+# can drive them in unit tests. The connection layer supplies a
 # random nonce.
 
 # base64("n,,"), the channel-binding attribute of the client-final
@@ -29,12 +30,12 @@ end
 
 priv struct Scram
   fn generate_nonce -> String
-    Base64.encode(Random.bytes(18))
+    Base.encode64(Random.bytes(18))
   end
 
   # The client-first-message-bare. Postgres ignores the SCRAM username
-  # (it uses the startup user), so the connection layer passes "",
-  # matching libpq; tests pass the RFC vector's username.
+  # (it uses the startup user), so the connection layer passes ""
+  # like libpq does. Tests pass the RFC vector's username.
   fn first_bare(username: String, nonce: String) -> String
     "n=" <> username <> ",r=" <> nonce
   end
@@ -74,8 +75,8 @@ priv struct Scram
     server_signature = HMAC.sha256(server_key, auth_message.to_binary())
 
     ScramProof{
-      client_final: without_proof <> ",p=" <> Base64.encode(client_proof),
-      server_signature: Base64.encode(server_signature),
+      client_final: without_proof <> ",p=" <> Base.encode64(client_proof),
+      server_signature: Base.encode64(server_signature),
     }
   end
 
@@ -120,7 +121,7 @@ priv struct Scram
       fail "malformed server-first-message: #{server_first}"
     end
 
-    salt = Base64.decode(salt_b64) rescue e -> fail "invalid salt: #{e}"
+    salt = Base.decode64(salt_b64) rescue e -> fail "invalid salt: #{e}"
 
     iterations = iterations_text.to_int()
       rescue _ -> fail "invalid iteration count: #{iterations_text}"

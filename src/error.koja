@@ -9,8 +9,8 @@ struct ServerError
 end
 
 @doc """
-Everything that can go wrong while talking to a Postgres server, from
-TCP-level failures to errors the server reports itself.
+Every error the driver can produce, from TCP failures to errors the
+Postgres server reports itself.
 """
 enum Error
   AuthenticationFailed(String)
