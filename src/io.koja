@@ -7,12 +7,12 @@ alias Net.TLSError
 # Postgres speaks a binary wire protocol whose length-prefix bytes
 # routinely land in the 0x80-0xFF range, so the driver stays in
 # `Binary` end to end. Reads go through `TCPSocket.read_binary` and
-# writes through `TCPSocket.write`, riding the I/O reactor: when the
+# writes through `TCPSocket.write`, both on the I/O reactor. When the
 # non-blocking socket would block, the calling process suspends
 # cooperatively until the fd is ready, then retries.
 priv struct Wire
-  # Writes every byte of `data` to the socket, looping until the whole
-  # buffer is flushed. Returns the number of bytes written.
+  # Writes every byte of `data` to the socket, and loops until the
+  # whole buffer is out. Returns the number of bytes written.
   fn write_all(socket: TCPSocket, data: Binary) -> Int ! Error
     try write_from(socket, data, 0)
   end
@@ -35,8 +35,8 @@ priv struct Wire
     split_at(buffer, total)
   end
 
-  # Splits `data` into the first `n` bytes and the remainder, clamping
-  # `n` to the available length.
+  # Splits `data` into the first `n` bytes and the remainder, and
+  # clamps `n` to the available length.
   fn split_at(data: Binary, n: Int) -> (Binary, Binary)
     size = data.byte_size()
     head_len = n > size ? size : n
@@ -45,8 +45,8 @@ priv struct Wire
     (head, tail)
   end
 
-  # Pulls a big-endian unsigned 16-bit integer off the front of `data`,
-  # returning it with the remaining bytes.
+  # Pulls a big-endian unsigned 16-bit integer off the front of `data`
+  # and returns it with the remaining bytes.
   fn take_u16(data: Binary) -> Option<(Int, Binary)>
     match data
       <<n::16, rest: Binary>> -> Option.Some((n, rest))
@@ -54,8 +54,8 @@ priv struct Wire
     end
   end
 
-  # Pulls a big-endian unsigned 32-bit integer off the front of `data`,
-  # returning it with the remaining bytes.
+  # Pulls a big-endian unsigned 32-bit integer off the front of `data`
+  # and returns it with the remaining bytes.
   fn take_u32(data: Binary) -> Option<(Int, Binary)>
     match data
       <<n::32, rest: Binary>> -> Option.Some((n, rest))
@@ -63,13 +63,13 @@ priv struct Wire
     end
   end
 
-  # Reads a NUL-terminated string off the front of `data`, returning
-  # the decoded text and the bytes after the terminator.
+  # Reads a NUL-terminated string off the front of `data` and returns
+  # the decoded text with the bytes after the terminator.
   fn take_cstring(data: Binary) -> Option<(String, Binary)>
     scan_cstring(data, <<>>)
   end
 
-  # Returns the byte at `index`, or 0 out of bounds.
+  # Returns the byte at `index`, or 0 when `index` is out of bounds.
   fn byte_at(data: Binary, index: Int) -> Int
     match data.at(index)
       Option.Some(b) -> b

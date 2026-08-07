@@ -9,8 +9,9 @@ struct Config
   user: String
 
   @doc """
-  Builds a config with no password, for servers using trust
-  authentication. Chain `with_password` when the server requires one.
+  Builds a config with no password, for servers that use trust
+  authentication. If the server requires a password, chain
+  `with_password`.
   """
   fn new(host: String, port: Int, user: String, database: String) -> Config
     Config{

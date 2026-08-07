@@ -3,8 +3,8 @@
 [![CI](https://github.com/hpopp/postgres-koja/actions/workflows/ci.yml/badge.svg)](https://github.com/hpopp/postgres-koja/actions/workflows/ci.yml)
 [![Last Updated](https://img.shields.io/github/last-commit/hpopp/postgres-koja.svg)](https://github.com/hpopp/postgres-koja/commits/main)
 
-A PostgreSQL driver for [Koja](https://github.com/koja-lang/koja), speaking the
-v3 wire protocol over TCP. No C dependencies beyond the Koja stdlib.
+A PostgreSQL driver for [Koja](https://github.com/koja-lang/koja). It speaks
+the v3 wire protocol over TCP, with no C dependencies beyond the Koja stdlib.
 
 ## Features
 
@@ -37,7 +37,7 @@ conn =
     Result.Err(e) -> return Result.Err(e.message())
   end
 
-# Simple query. The connection is a value: rebind the returned copy.
+# Simple query. The connection is a value, so rebind the returned copy.
 (conn, outcome) = conn.query("SELECT id, name FROM users")
 
 match outcome
@@ -51,15 +51,15 @@ match outcome
     IO.puts(e.message())
 end
 
-# Parameterized query via the extended protocol. Parameters are text;
-# cast them in SQL. Option.None binds SQL NULL.
+# Parameterized query via the extended protocol. Parameters are text,
+# so cast them in SQL. Option.None binds SQL NULL.
 params: List<Option<String>> = [Option.Some("42")]
 (conn, _) = conn.execute("SELECT name FROM users WHERE id = $1::int", params)
 
 _ = conn.close()
 ```
 
-All result values are text-format strings as sent by the server
+Every result value is the text-format string the server sent
 (`Option.None` for NULL). Interpret them with `to_int()` / `to_float()`
 as needed.
 
@@ -67,22 +67,22 @@ as needed.
 
 Every failure is a `Postgres.Error`:
 
-| Variant                        | Meaning                                          |
-| ------------------------------ | ------------------------------------------------ |
-| `ConnectFailed(String)`        | TCP connection could not be established          |
-| `AuthenticationFailed(String)` | Password missing, SCRAM proof/verification error |
-| `UnsupportedAuthentication`    | Server demands a method the driver lacks (MD5)   |
-| `Server(ServerError)`          | Server-reported error with SQLSTATE + severity   |
-| `Protocol(String)`             | Malformed or unexpected wire data                |
-| `IO(String)`                   | Socket read/write failure                        |
-| `ConnectionClosed`             | Server closed the connection                     |
+| Variant                        | Meaning                                                  |
+| ------------------------------ | -------------------------------------------------------- |
+| `ConnectFailed(String)`        | The TCP connection failed                                |
+| `AuthenticationFailed(String)` | Missing password, or a SCRAM proof or verification error |
+| `UnsupportedAuthentication`    | The server demands a method the driver lacks (MD5)       |
+| `Server(ServerError)`          | Server-reported error with SQLSTATE + severity           |
+| `Protocol(String)`             | Malformed or unexpected wire data                        |
+| `IO(String)`                   | Socket read/write failure                                |
+| `ConnectionClosed`             | Server closed the connection                             |
 
 `error.message()` renders any variant as a human-readable string.
 
 ## Not yet supported
 
 - Typed row decoding (values are text)
-- TLS (`sslmode`) — connect over trusted networks or a local socket proxy
+- TLS (`sslmode`). Connect over trusted networks or a local socket proxy.
 - MD5 password authentication
 - Connection pooling
 - Binary parameter/result formats
@@ -90,7 +90,7 @@ Every failure is a `Postgres.Error`:
 
 ## Development
 
-Unit tests are pure; integration tests expect the bundled Postgres:
+Unit tests are pure. Integration tests expect the bundled Postgres:
 
 ```sh
 docker compose up -d
@@ -98,8 +98,8 @@ koja test
 ```
 
 The container (Postgres 16 on host port 5434, database `koja_test`)
-provisions one user per auth path: `koja_trust` (trust), `koja_password`
-(cleartext), and `koja_scram` (SCRAM-SHA-256).
+provisions one user per authentication method: `koja_trust` (trust),
+`koja_password` (cleartext), and `koja_scram` (SCRAM-SHA-256).
 
 ## License
 

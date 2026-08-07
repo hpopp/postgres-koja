@@ -1,21 +1,21 @@
 alias Net.TCPSocket
 
 @doc """
-A live Postgres connection speaking the v3 simple-query protocol.
+A live Postgres connection that speaks the v3 wire protocol.
 
-The connection owns its TCP socket and a read buffer holding any bytes
-received past the last consumed message. Because Koja values are
-independent, `query` returns an updated connection alongside its
-result; callers rebind to the returned connection.
+The connection owns its TCP socket and a read buffer that carries any
+bytes read past the last consumed message. Koja values are
+independent, so `query` returns an updated connection alongside its
+result. Rebind to the returned connection.
 """
 struct Connection
   buffer: Binary
   socket: TCPSocket
 
   @doc """
-  Opens a connection, performs the startup handshake (trust,
-  cleartext password, or SCRAM-SHA-256 as the server demands), and
-  waits for the server to report it is ready for queries.
+  Opens a connection and performs the startup handshake (trust,
+  cleartext password, or SCRAM-SHA-256 as the server demands). Waits
+  until the server reports it is ready for queries.
   """
   fn connect(config: Config) -> Connection ! Error
     socket = TCPSocket.connect(config.host, config.port)
@@ -45,7 +45,7 @@ struct Connection
 
   @doc """
   Runs a single SQL statement with `$1`-style parameters via the
-  extended query protocol. Parameters are text-format;
+  extended query protocol. Parameters are text-format, and
   `Option.None` binds SQL NULL. Returns the updated connection
   paired with the query outcome.
   """
@@ -73,7 +73,7 @@ struct Connection
   end
 
   # Pumps startup-phase messages until the server reports
-  # ReadyForQuery, answering authentication requests along the way.
+  # ReadyForQuery, and answers authentication requests along the way.
   priv fn handshake(socket: TCPSocket, buffer: Binary, config: Config)
     -> Binary ! Error
 
@@ -105,8 +105,8 @@ struct Connection
 
   # Runs the SCRAM-SHA-256 exchange: client-first, server-first,
   # client-final, server-final (verified). Returns the unconsumed
-  # read buffer; the following AuthenticationOk/ReadyForQuery
-  # messages are left for `handshake`.
+  # read buffer. The AuthenticationOk and ReadyForQuery messages
+  # that follow stay in the buffer for `handshake`.
   priv fn sasl_authenticate(
     socket: TCPSocket,
     buffer: Binary,
@@ -224,8 +224,8 @@ struct QueryResult
   tag: String
 end
 
-# Accumulator threaded through the read loop while a query's response
-# stream is consumed.
+# Accumulator threaded through the read loop that consumes a query's
+# response stream.
 priv struct QueryState
   error: Option<ServerError>
   fields: List<String>
