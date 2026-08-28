@@ -1,0 +1,128 @@
+alias Net.TCPSocket
+
+# The startup phase of the v3 protocol on a fresh socket. It sends
+# the startup message, then answers authentication requests (trust,
+# cleartext password, or SCRAM-SHA-256 as the server demands) until
+# the server reports ReadyForQuery.
+priv struct Startup
+  # Runs the whole startup phase. Returns the unconsumed read buffer,
+  # which may already hold bytes of the first query response.
+  fn negotiate(socket: TCPSocket, config: Config) -> Binary ! Error
+    startup = Message.encode_startup(config.user, config.database)
+    try Wire.write_all(socket, startup)
+
+    buffer: Binary = <<>>
+    try pump(socket, buffer, config)
+  end
+
+  # Pumps startup-phase messages until the server reports
+  # ReadyForQuery, and answers authentication requests along the way.
+  priv fn pump(socket: TCPSocket, buffer: Binary, config: Config)
+    -> Binary ! Error
+
+    (message, leftover) = try Wire.read_message(socket, buffer)
+
+    match Message.decode(message)
+      Backend.ReadyForQuery ->
+        leftover
+
+      Backend.ErrorResponse(server_error) ->
+        fail Error.Server(server_error)
+
+      Backend.AuthenticationCleartextPassword ->
+        password = try require_password(config)
+        try Wire.write_all(socket, Message.encode_password(password))
+        try pump(socket, leftover, config)
+
+      Backend.AuthenticationSASL(mechanisms) ->
+        leftover = try sasl_authenticate(socket, leftover, config, mechanisms)
+        try pump(socket, leftover, config)
+
+      Backend.AuthenticationOther(kind) ->
+        fail Error.UnsupportedAuthentication(auth_method_name(kind))
+
+      _ ->
+        try pump(socket, leftover, config)
+    end
+  end
+
+  # Runs the SCRAM-SHA-256 exchange: client-first, server-first,
+  # client-final, server-final (verified). Returns the unconsumed
+  # read buffer. The AuthenticationOk and ReadyForQuery messages
+  # that follow stay in the buffer for `pump`.
+  priv fn sasl_authenticate(
+    socket: TCPSocket,
+    buffer: Binary,
+    config: Config,
+    mechanisms: List<String>,
+  ) -> Binary ! Error
+
+    unless mechanisms.any?(m -> m == "SCRAM-SHA-256")
+      fail Error.UnsupportedAuthentication("server offered no supported SASL mechanism")
+    end
+
+    password = try require_password(config)
+
+    nonce = Scram.generate_nonce()
+    initial = Message.encode_sasl_initial(
+      "SCRAM-SHA-256",
+      Scram.first_message("", nonce),
+    )
+
+    try Wire.write_all(socket, initial)
+
+    (continue_message, continue_buffer) = try read_auth_message(socket, buffer)
+
+    server_first =
+      match continue_message
+        Backend.AuthenticationSASLContinue(text) -> text
+        Backend.ErrorResponse(server_error) -> fail Error.Server(server_error)
+        _ -> fail Error.Protocol("expected SASL continue message")
+      end
+
+    proof = Scram.proof(password, "", nonce, server_first)
+      rescue e -> fail Error.AuthenticationFailed(e)
+
+    try Wire.write_all(socket, Message.encode_sasl_response(proof.client_final))
+
+    (final_message, final_buffer) = try read_auth_message(
+      socket,
+      continue_buffer,
+    )
+
+    server_final =
+      match final_message
+        Backend.AuthenticationSASLFinal(text) -> text
+        Backend.ErrorResponse(server_error) -> fail Error.Server(server_error)
+        _ -> fail Error.Protocol("expected SASL final message")
+      end
+
+    Scram.verify_server_final(server_final, proof.server_signature)
+      rescue e -> fail Error.AuthenticationFailed(e)
+
+    final_buffer
+  end
+
+  # Reads and decodes one message during the SASL exchange.
+  priv fn read_auth_message(socket: TCPSocket, buffer: Binary)
+    -> (Backend, Binary) ! Error
+
+    (message, leftover) = try Wire.read_message(socket, buffer)
+    (Message.decode(message), leftover)
+  end
+
+  priv fn require_password(config: Config) -> String ! Error
+    try config.password.or_err(
+      Error.AuthenticationFailed("server requested a password but none was configured"),
+    )
+  end
+
+  priv fn auth_method_name(kind: Int) -> String
+    match kind
+      3 -> "cleartext password"
+      5 -> "md5"
+      10 -> "sasl"
+      _ -> "authentication code #{kind}"
+    end
+  end
+end

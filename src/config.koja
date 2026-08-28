@@ -1,11 +1,16 @@
 @doc """
 Connection settings for `Connection.connect`.
+
+`statement_cache_size` caps the per-connection prepared statement
+cache that `Connection.execute` maintains. Set 0 to prepare every
+statement as unnamed and cache nothing.
 """
 struct Config
   database: String
   host: String
-  password: Option<String>
-  port: Int
+  password: Option<String> = Option.None
+  port: Int = 5432
+  statement_cache_size: Int = 256
   user: String
 
   @doc """
@@ -14,13 +19,7 @@ struct Config
   `with_password`.
   """
   fn new(host: String, port: Int, user: String, database: String) -> Config
-    Config{
-      database: database,
-      host: host,
-      password: Option.None,
-      port: port,
-      user: user,
-    }
+    Config{database: database, host: host, port: port, user: user}
   end
 
   @doc """
@@ -28,6 +27,15 @@ struct Config
   """
   fn with_password(self, password: String) -> Config
     self.password = Option.Some(password)
+    self
+  end
+
+  @doc """
+  Returns the config with the given statement cache size. Set 0 to
+  turn the cache off.
+  """
+  fn with_statement_cache_size(self, size: Int) -> Config
+    self.statement_cache_size = size
     self
   end
 end

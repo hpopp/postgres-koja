@@ -32,25 +32,13 @@ struct IntegrationTest
       return Result.Err("expected 2 fields, got #{result.fields.length()}")
     end
 
-    match IntegrationTest.cell(result, 0, 0)
-      Option.Some(value) ->
-        unless value == "1"
-          return Result.Err("expected `1`, got `#{value}`")
-        end
-
-      Option.None ->
-        return Result.Err("expected cell (0,0) to be non-NULL")
+    unless IntegrationTest.cell(result, 0, 0) == Value.Int(1)
+      return Result.Err("expected Int(1) at (0,0)")
     end
 
-    match IntegrationTest.cell(result, 0, 1)
-      Option.Some(value) ->
-        value == "two"
-          ? Result.Ok(true)
-          : Result.Err("expected `two`, got `#{value}`")
-
-      Option.None ->
-        Result.Err("expected cell (0,1) to be non-NULL")
-    end
+    IntegrationTest.cell(result, 0, 1) == Value.String("two")
+      ? Result.Ok(true)
+      : Result.Err("expected String(two) at (0,1)")
   end
 
   @test "returns NULL columns as None"
@@ -71,9 +59,46 @@ struct IntegrationTest
       end
 
     match IntegrationTest.cell(result, 0, 0)
-      Option.None -> Result.Ok(true)
-      Option.Some(value) -> Result.Err("expected NULL, got `#{value}`")
+      Value.Null -> Result.Ok(true)
+      other -> Result.Err("expected Null, got #{other.format()}")
     end
+  end
+
+  @test "decodes bool, int, float, text, and NULL to typed values"
+  fn test_typed_round_trip -> Result<Bool, String>
+    conn =
+      match IntegrationTest.connect_trust()
+        Result.Ok(c) -> c
+        Result.Err(e) -> return Result.Err(e)
+      end
+
+    (conn, outcome) = conn.query("SELECT true, 42, 1.5::float8, 'hi', NULL")
+    _ = conn.close()
+
+    result =
+      match outcome
+        Result.Ok(r) -> r
+        Result.Err(e) -> return Result.Err(e.message())
+      end
+
+    expected: List<Value> = [
+      Value.Bool(true), Value.Int(42), Value.Float(1.5), Value.String("hi"),
+      Value.Null
+    ]
+
+    index = 0
+
+    for want in expected
+      got = IntegrationTest.cell(result, 0, index)
+
+      unless got == want
+        return Result.Err("column #{index} decoded to #{got.format()}, want #{want.format()}")
+      end
+
+      index = index + 1
+    end
+
+    Result.Ok(true)
   end
 
   @test "runs DDL and DML with the right command tags"
@@ -123,19 +148,13 @@ struct IntegrationTest
       return Result.Err("expected 2 rows, got #{result.rows.length()}")
     end
 
-    match IntegrationTest.cell(result, 0, 0)
-      Option.Some(value) ->
-        unless value == "seven"
-          return Result.Err("expected `seven`, got `#{value}`")
-        end
-
-      Option.None ->
-        return Result.Err("expected row 0 to be non-NULL")
+    unless IntegrationTest.cell(result, 0, 0) == Value.String("seven")
+      return Result.Err("expected String(seven) in row 0")
     end
 
     match IntegrationTest.cell(result, 1, 0)
-      Option.None -> Result.Ok(true)
-      Option.Some(value) -> Result.Err("expected NULL, got `#{value}`")
+      Value.Null -> Result.Ok(true)
+      other -> Result.Err("expected Null, got #{other.format()}")
     end
   end
 
@@ -221,7 +240,7 @@ struct IntegrationTest
     end
   end
 
-  @test "executes a parameterized SELECT"
+  @test "executes a typed parameterized SELECT without casts"
   fn test_execute_select -> Result<Bool, String>
     conn =
       match IntegrationTest.connect_trust()
@@ -229,8 +248,10 @@ struct IntegrationTest
         Result.Err(e) -> return Result.Err(e)
       end
 
-    params: List<Option<String>> = [Option.Some("40"), Option.Some("2")]
-    (conn, outcome) = conn.execute("SELECT $1::int + $2::int AS total", params)
+    # Declared parameter OIDs type $1 and $2 as int8, so the SQL
+    # needs no ::int casts.
+    params = [Value.int(40), Value.int(2)]
+    (conn, outcome) = conn.execute("SELECT $1 + $2 AS total", params)
     _ = conn.close()
 
     result =
@@ -243,15 +264,9 @@ struct IntegrationTest
       return Result.Err("expected tag `SELECT 1`, got `#{result.tag}`")
     end
 
-    match IntegrationTest.cell(result, 0, 0)
-      Option.Some(value) ->
-        value == "42"
-          ? Result.Ok(true)
-          : Result.Err("expected `42`, got `#{value}`")
-
-      Option.None ->
-        Result.Err("expected total to be non-NULL")
-    end
+    IntegrationTest.cell(result, 0, 0) == Value.Int(42)
+      ? Result.Ok(true)
+      : Result.Err("expected Int(42) total")
   end
 
   @test "executes DML with NULL parameters and reads them back"
@@ -262,10 +277,8 @@ struct IntegrationTest
         Result.Err(e) -> return Result.Err(e)
       end
 
-    no_params: List<Option<String>> = List.new()
     (conn, created) = conn.execute(
       "CREATE TEMP TABLE exec_test (id INT, label TEXT)",
-      no_params,
     )
 
     match IntegrationTest.expect_tag(created, "CREATE TABLE")
@@ -277,9 +290,9 @@ struct IntegrationTest
         ()
     end
 
-    insert_params: List<Option<String>> = [Option.Some("1"), Option.None]
+    insert_params = [Value.int(1), Value.null()]
     (conn, inserted) = conn.execute(
-      "INSERT INTO exec_test VALUES ($1::int, $2::text)",
+      "INSERT INTO exec_test VALUES ($1, $2)",
       insert_params,
     )
 
@@ -292,9 +305,9 @@ struct IntegrationTest
         ()
     end
 
-    select_params: List<Option<String>> = [Option.Some("1")]
+    select_params = [Value.int(1)]
     (conn, selected) = conn.execute(
-      "SELECT label FROM exec_test WHERE id = $1::int",
+      "SELECT label FROM exec_test WHERE id = $1",
       select_params,
     )
     _ = conn.close()
@@ -310,8 +323,8 @@ struct IntegrationTest
     end
 
     match IntegrationTest.cell(result, 0, 0)
-      Option.None -> Result.Ok(true)
-      Option.Some(value) -> Result.Err("expected NULL label, got `#{value}`")
+      Value.Null -> Result.Ok(true)
+      other -> Result.Err("expected Null label, got #{other.format()}")
     end
   end
 
@@ -323,8 +336,7 @@ struct IntegrationTest
         Result.Err(e) -> return Result.Err(e)
       end
 
-    no_params: List<Option<String>> = List.new()
-    (conn, outcome) = conn.execute("SELECT * FROM missing_table", no_params)
+    (conn, outcome) = conn.execute("SELECT * FROM missing_table")
     _ = conn.close()
 
     match outcome
@@ -339,6 +351,289 @@ struct IntegrationTest
       Result.Err(e) ->
         Result.Err("expected Error.Server, got: " <> e.message())
     end
+  end
+
+  @test "execute reuses a cached prepared statement"
+  fn test_statement_cache_reuse -> Result<Bool, String>
+    conn =
+      match IntegrationTest.connect_trust()
+        Result.Ok(c) -> c
+        Result.Err(e) -> return Result.Err(e)
+      end
+
+    first_params = [Value.int(1)]
+    (conn, first) = conn.execute("SELECT $1 AS n", first_params)
+
+    match first
+      Result.Ok(_) ->
+        ()
+
+      Result.Err(e) ->
+        _ = conn.close()
+        return Result.Err(e.message())
+    end
+
+    second_params = [Value.int(2)]
+    (conn, second) = conn.execute("SELECT $1 AS n", second_params)
+
+    result =
+      match second
+        Result.Ok(r) ->
+          r
+
+        Result.Err(e) ->
+          _ = conn.close()
+          return Result.Err(e.message())
+      end
+
+    unless IntegrationTest.cell(result, 0, 0) == Value.Int(2)
+      _ = conn.close()
+      return Result.Err("expected Int(2) from the cached statement")
+    end
+
+    (conn, names) = IntegrationTest.prepared_names(conn)
+    _ = conn.close()
+
+    listed =
+      match names
+        Result.Ok(r) -> r
+        Result.Err(e) -> return Result.Err(e)
+      end
+
+    unless listed.rows.length() == 1
+      return Result.Err("expected 1 prepared statement, got #{listed.rows.length()}")
+    end
+
+    IntegrationTest.cell(listed, 0, 0) == Value.String("koja_s1")
+      ? Result.Ok(true)
+      : Result.Err("expected statement koja_s1")
+  end
+
+  @test "the cache evicts the least recently used statement"
+  fn test_statement_cache_eviction -> Result<Bool, String>
+    config = Config.new(TEST_HOST, TEST_PORT, "koja_trust", TEST_DATABASE)
+      .with_statement_cache_size(1)
+
+    conn =
+      match IntegrationTest.connect_config(config)
+        Result.Ok(c) -> c
+        Result.Err(e) -> return Result.Err(e)
+      end
+
+    (conn, first) = conn.execute("SELECT 1 AS a")
+
+    match first
+      Result.Ok(_) ->
+        ()
+
+      Result.Err(e) ->
+        _ = conn.close()
+        return Result.Err(e.message())
+    end
+
+    (conn, second) = conn.execute("SELECT 2 AS b")
+
+    match second
+      Result.Ok(_) ->
+        ()
+
+      Result.Err(e) ->
+        _ = conn.close()
+        return Result.Err(e.message())
+    end
+
+    (conn, names) = IntegrationTest.prepared_names(conn)
+    _ = conn.close()
+
+    listed =
+      match names
+        Result.Ok(r) -> r
+        Result.Err(e) -> return Result.Err(e)
+      end
+
+    unless listed.rows.length() == 1
+      return Result.Err("expected the first statement to be closed, " <>
+        "got #{listed.rows.length()} prepared")
+    end
+
+    IntegrationTest.cell(listed, 0, 0) == Value.String("koja_s2")
+      ? Result.Ok(true)
+      : Result.Err("expected only koja_s2 to remain")
+  end
+
+  @test "a zero cache size prepares nothing"
+  fn test_statement_cache_disabled -> Result<Bool, String>
+    config = Config.new(TEST_HOST, TEST_PORT, "koja_trust", TEST_DATABASE)
+      .with_statement_cache_size(0)
+
+    conn =
+      match IntegrationTest.connect_config(config)
+        Result.Ok(c) -> c
+        Result.Err(e) -> return Result.Err(e)
+      end
+
+    params = [Value.int(7)]
+    (conn, outcome) = conn.execute("SELECT $1 AS n", params)
+
+    result =
+      match outcome
+        Result.Ok(r) ->
+          r
+
+        Result.Err(e) ->
+          _ = conn.close()
+          return Result.Err(e.message())
+      end
+
+    unless IntegrationTest.cell(result, 0, 0) == Value.Int(7)
+      _ = conn.close()
+      return Result.Err("expected Int(7) from the uncached statement")
+    end
+
+    (conn, names) = IntegrationTest.prepared_names(conn)
+    _ = conn.close()
+
+    listed =
+      match names
+        Result.Ok(r) -> r
+        Result.Err(e) -> return Result.Err(e)
+      end
+
+    listed.rows.length() == 0
+      ? Result.Ok(true)
+      : Result.Err("expected no prepared statements, got #{listed.rows.length()}")
+  end
+
+  @test "a schema change under a cached statement re-prepares"
+  fn test_stale_statement_schema_change -> Result<Bool, String>
+    conn =
+      match IntegrationTest.connect_trust()
+        Result.Ok(c) -> c
+        Result.Err(e) -> return Result.Err(e)
+      end
+
+    setup = [
+      "DROP TABLE IF EXISTS stale_plan_probe",
+      "CREATE TABLE stale_plan_probe (a int)",
+      "INSERT INTO stale_plan_probe (a) VALUES (1)"
+    ]
+
+    for sql in setup
+      (next, outcome) = conn.query(sql)
+      conn = next
+
+      match outcome
+        Result.Ok(_) ->
+          ()
+
+        Result.Err(e) ->
+          _ = conn.close()
+          return Result.Err(e.message())
+      end
+    end
+
+    (conn, first) = conn.execute("SELECT * FROM stale_plan_probe")
+
+    match first
+      Result.Ok(_) ->
+        ()
+
+      Result.Err(e) ->
+        _ = conn.close()
+        return Result.Err(e.message())
+    end
+
+    # Adding a column changes the result shape of `SELECT *`, which
+    # invalidates the cached plan (SQLSTATE 0A000) on the next run.
+    (conn, altered) = conn.query(
+      "ALTER TABLE stale_plan_probe ADD COLUMN b int",
+    )
+
+    match altered
+      Result.Ok(_) ->
+        ()
+
+      Result.Err(e) ->
+        _ = conn.close()
+        return Result.Err(e.message())
+    end
+
+    (conn, second) = conn.execute("SELECT * FROM stale_plan_probe")
+    (conn, _) = conn.query("DROP TABLE stale_plan_probe")
+    _ = conn.close()
+
+    result =
+      match second
+        Result.Ok(r) -> r
+        Result.Err(e) ->
+          return Result.Err("expected a re-prepare after the schema change, got: " <>
+            e.message())
+      end
+
+    result.fields.length() == 2
+      ? Result.Ok(true)
+      : Result.Err("expected 2 columns after re-prepare, got #{result.fields.length()}")
+  end
+
+  @test "a deallocated statement re-prepares"
+  fn test_stale_statement_deallocated -> Result<Bool, String>
+    conn =
+      match IntegrationTest.connect_trust()
+        Result.Ok(c) -> c
+        Result.Err(e) -> return Result.Err(e)
+      end
+
+    first_params = [Value.int(1)]
+    (conn, first) = conn.execute("SELECT $1 AS n", first_params)
+
+    match first
+      Result.Ok(_) ->
+        ()
+
+      Result.Err(e) ->
+        _ = conn.close()
+        return Result.Err(e.message())
+    end
+
+    # DEALLOCATE ALL drops every prepared statement server-side, like
+    # a pooler running DISCARD ALL between checkouts.
+    (conn, dropped) = conn.query("DEALLOCATE ALL")
+
+    match dropped
+      Result.Ok(_) ->
+        ()
+
+      Result.Err(e) ->
+        _ = conn.close()
+        return Result.Err(e.message())
+    end
+
+    second_params = [Value.int(9)]
+    (conn, second) = conn.execute("SELECT $1 AS n", second_params)
+    (conn, names) = IntegrationTest.prepared_names(conn)
+    _ = conn.close()
+
+    result =
+      match second
+        Result.Ok(r) -> r
+        Result.Err(e) ->
+          return Result.Err("expected a re-prepare after DEALLOCATE ALL, got: " <>
+            e.message())
+      end
+
+    unless IntegrationTest.cell(result, 0, 0) == Value.Int(9)
+      return Result.Err("expected Int(9) from the re-prepared statement")
+    end
+
+    listed =
+      match names
+        Result.Ok(r) -> r
+        Result.Err(e) -> return Result.Err(e)
+      end
+
+    listed.rows.length() == 1
+      ? Result.Ok(true)
+      : Result.Err("expected 1 re-prepared statement, got #{listed.rows.length()}")
   end
 
   priv fn connect_and_select_user(config: Config, want_user: String)
@@ -361,20 +656,18 @@ struct IntegrationTest
         Result.Err(e) -> return Result.Err(e.message())
       end
 
-    match IntegrationTest.cell(result, 0, 0)
-      Option.Some(value) ->
-        value == want_user
-          ? Result.Ok(true)
-          : Result.Err("expected `#{want_user}`, got `#{value}`")
-
-      Option.None ->
-        Result.Err("expected current_user to be non-NULL")
-    end
+    IntegrationTest.cell(result, 0, 0) == Value.String(want_user)
+      ? Result.Ok(true)
+      : Result.Err("expected current_user `#{want_user}`")
   end
 
   priv fn connect_trust -> Result<Connection, String>
-    config = Config.new(TEST_HOST, TEST_PORT, "koja_trust", TEST_DATABASE)
+    IntegrationTest.connect_config(
+      Config.new(TEST_HOST, TEST_PORT, "koja_trust", TEST_DATABASE),
+    )
+  end
 
+  priv fn connect_config(config: Config) -> Result<Connection, String>
     match Connection.connect(config)
       Result.Ok(conn) ->
         Result.Ok(conn)
@@ -384,16 +677,32 @@ struct IntegrationTest
     end
   end
 
-  priv fn cell(result: QueryResult, row: Int, column: Int) -> Option<String>
+  # The typed value at a row and column, or `Null` when out of range.
+  priv fn cell(result: QueryResult, row: Int, column: Int) -> Value
     match result.rows.get(row)
       Option.Some(columns) ->
         match columns.get(column)
           Option.Some(value) -> value
-          Option.None -> Option.None
+          Option.None -> Value.Null
         end
 
       Option.None ->
-        Option.None
+        Value.Null
+    end
+  end
+
+  # The statement names the server currently holds, for cache
+  # assertions. Uses the simple protocol, which the cache ignores.
+  priv fn prepared_names(conn: Connection)
+    -> (Connection, Result<QueryResult, String>)
+
+    (conn, outcome) = conn.query(
+      "SELECT name FROM pg_prepared_statements ORDER BY name",
+    )
+
+    match outcome
+      Result.Ok(result) -> (conn, Result.Ok(result))
+      Result.Err(e) -> (conn, Result.Err(e.message()))
     end
   end
 
