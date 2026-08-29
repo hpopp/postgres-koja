@@ -1,0 +1,136 @@
+@doc """
+The per-connection prepared statement cache behind
+`Connection.execute`. Entries map a cache key (SQL text plus parameter
+type OIDs) to a server-side statement name, with least-recently-used
+eviction bounded by `limit`. Values are immutable: every operation
+returns the updated cache, and the connection rebinds it.
+"""
+struct StatementCache
+  counter: Int
+  entries: Map<String, (String, Int)>
+  limit: Int
+  tick: Int
+
+  @doc """
+  Builds an empty cache holding at most `limit` statements. A limit of
+  0 disables caching.
+  """
+  fn new(limit: Int) -> StatementCache
+    entries: Map<String, (String, Int)> = Map.new()
+    StatementCache{counter: 0, entries: entries, limit: limit, tick: 0}
+  end
+
+  @doc """
+  True when the cache stores statements at all.
+  """
+  fn enabled?(self) -> Bool
+    self.limit > 0
+  end
+
+  @doc """
+  The cache key for a statement, covering the SQL text and the
+  declared parameter type OIDs. The same SQL with different parameter
+  types is a different server-side statement.
+  """
+  fn key(sql: String, oids: List<Int>) -> String
+    key = sql
+
+    for oid in oids
+      key = key <> "|#{oid}"
+    end
+
+    key
+  end
+
+  @doc """
+  Looks up the statement name for `key` and marks it just used.
+  Returns the updated cache and the name, or `None` on a miss.
+  """
+  fn hit(self, key: String) -> (StatementCache, Option<String>)
+    match self.entries.get(key)
+      Option.Some(stored) ->
+        (name, _) = stored
+        (self.touch(key, name), Option.Some(name))
+
+      Option.None ->
+        miss: Option<String> = Option.None
+        (self, miss)
+    end
+  end
+
+  @doc """
+  Claims a fresh statement name, evicting the least recently used
+  entry when the cache is full. Returns the updated cache, the name,
+  and a Close frame for the evicted statement (empty when nothing was
+  evicted). Record the name with `store` once the statement parses.
+  """
+  fn reserve(self) -> (StatementCache, String, Binary)
+    (cache, close_frame) = self.evict_if_full()
+    cache.counter = cache.counter + 1
+    (cache, "koja_s#{cache.counter}", close_frame)
+  end
+
+  @doc """
+  Records `name` as the prepared statement for `key` and marks it just
+  used.
+  """
+  fn store(self, key: String, name: String) -> StatementCache
+    self.touch(key, name)
+  end
+
+  @doc """
+  Drops the entry for `key`, if any.
+  """
+  fn remove(self, key: String) -> StatementCache
+    self.entries = self.entries.remove(key)
+    self
+  end
+
+  priv fn touch(self, key: String, name: String) -> StatementCache
+    self.tick = self.tick + 1
+    self.entries = self.entries.put(key, (name, self.tick))
+    self
+  end
+
+  # Removes the least recently used entry when the cache is full.
+  # Returns the updated cache and a Close frame to send ahead of the
+  # next Parse, or an empty binary when nothing was evicted.
+  priv fn evict_if_full(self) -> (StatementCache, Binary)
+    if self.entries.length() < self.limit
+      empty: Binary = <<>>
+      return (self, empty)
+    end
+
+    victim_key = ""
+    victim_name = ""
+    oldest = -1
+
+    for entry in self.entries
+      (entry_key, stored) = entry
+      (name, tick) = stored
+
+      if oldest < 0 or tick < oldest
+        oldest = tick
+        victim_key = entry_key
+        victim_name = name
+      end
+    end
+
+    self.entries = self.entries.remove(victim_key)
+    (self, Message.encode_close(victim_name))
+  end
+end
+
+# True when the server reports a cached statement is unusable. The
+# cached plan is invalid after a schema change (SQLSTATE 0A000), or
+# the statement no longer exists on the server (26000, e.g. after a
+# pooler ran DISCARD ALL).
+priv fn stale_statement?(error: Error) -> Bool
+  match error
+    Error.Server(server_error) ->
+      server_error.code == "0A000" or server_error.code == "26000"
+
+    _ ->
+      false
+  end
+end

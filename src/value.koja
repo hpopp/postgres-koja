@@ -1,0 +1,225 @@
+@doc """
+A typed SQL value, either a query result column or a statement
+parameter. Mirrors `JSON.Value` with one variant per scalar shape
+plus `Null` for SQL NULL.
+
+Result columns decode from the type OID the server reports. The
+driver maps bool, the integer family, and the float family. Every
+other type (numeric, timestamps, uuid, json) passes through as
+`String` in the server's text format.
+"""
+enum Value
+  Null
+  Bool(Bool)
+  Int(Int)
+  Float(Float)
+  String(String)
+
+  @doc """
+  The SQL `NULL` value.
+  """
+  fn null -> Value
+    Value.Null
+  end
+
+  @doc """
+  Wraps a `Bool` as a SQL value.
+  """
+  fn bool(v: Bool) -> Value
+    Value.Bool(v)
+  end
+
+  @doc """
+  Wraps an `Int` as a SQL value.
+  """
+  fn int(n: Int) -> Value
+    Value.Int(n)
+  end
+
+  @doc """
+  Wraps a `Float` as a SQL value.
+  """
+  fn float(f: Float) -> Value
+    Value.Float(f)
+  end
+
+  @doc """
+  Wraps a `String` as a SQL value.
+  """
+  fn string(s: String) -> Value
+    Value.String(s)
+  end
+
+  @doc """
+  Wraps an optional `Bool`. `None` becomes SQL NULL.
+  """
+  fn opt_bool(v: Option<Bool>) -> Value
+    match v
+      Option.Some(b) -> Value.Bool(b)
+      Option.None -> Value.Null
+    end
+  end
+
+  @doc """
+  Wraps an optional `Int`. `None` becomes SQL NULL.
+  """
+  fn opt_int(n: Option<Int>) -> Value
+    match n
+      Option.Some(i) -> Value.Int(i)
+      Option.None -> Value.Null
+    end
+  end
+
+  @doc """
+  Wraps an optional `Float`. `None` becomes SQL NULL.
+  """
+  fn opt_float(f: Option<Float>) -> Value
+    match f
+      Option.Some(x) -> Value.Float(x)
+      Option.None -> Value.Null
+    end
+  end
+
+  @doc """
+  Wraps an optional `String`. `None` becomes SQL NULL.
+  """
+  fn opt_string(s: Option<String>) -> Value
+    match s
+      Option.Some(text) -> Value.String(text)
+      Option.None -> Value.Null
+    end
+  end
+
+  @doc """
+  The `Bool` inside, or `None` for any other variant.
+  """
+  fn as_bool(self) -> Option<Bool>
+    match self
+      Value.Bool(v) -> Option.Some(v)
+      _ -> Option.None
+    end
+  end
+
+  @doc """
+  The `Int` inside, or `None` for any other variant.
+  """
+  fn as_int(self) -> Option<Int>
+    match self
+      Value.Int(n) -> Option.Some(n)
+      _ -> Option.None
+    end
+  end
+
+  @doc """
+  The `Float` inside, or `None` for any other variant.
+  """
+  fn as_float(self) -> Option<Float>
+    match self
+      Value.Float(f) -> Option.Some(f)
+      _ -> Option.None
+    end
+  end
+
+  @doc """
+  The `String` inside, or `None` for any other variant.
+  """
+  fn as_string(self) -> Option<String>
+    match self
+      Value.String(s) -> Option.Some(s)
+      _ -> Option.None
+    end
+  end
+
+  @doc """
+  The `Bool` inside, or `fallback` for any other variant.
+  """
+  fn bool_or(self, fallback: Bool) -> Bool
+    self.as_bool().or(fallback)
+  end
+
+  @doc """
+  The `Int` inside, or `fallback` for any other variant.
+  """
+  fn int_or(self, fallback: Int) -> Int
+    self.as_int().or(fallback)
+  end
+
+  @doc """
+  The `Float` inside, or `fallback` for any other variant.
+  """
+  fn float_or(self, fallback: Float) -> Float
+    self.as_float().or(fallback)
+  end
+
+  @doc """
+  The `String` inside, or `fallback` for any other variant.
+  """
+  fn string_or(self, fallback: String) -> String
+    self.as_string().or(fallback)
+  end
+
+  @doc """
+  The text wire format for a Bind parameter. `Null` becomes `None`,
+  which binds SQL NULL.
+  """
+  fn encode(self) -> Option<String>
+    match self
+      Value.Null -> Option.None
+      Value.Bool(v) -> Option.Some(v ? "t" : "f")
+      Value.Int(n) -> Option.Some("#{n}")
+      Value.Float(f) -> Option.Some("#{f}")
+      Value.String(s) -> Option.Some(s)
+    end
+  end
+
+  @doc """
+  The parameter type OID declared in a Parse message. `String` and
+  `Null` declare 0, so the server infers the type from context.
+  """
+  fn type_oid(self) -> Int
+    match self
+      Value.Null -> 0
+      Value.Bool(_) -> 16
+      Value.Int(_) -> 20
+      Value.Float(_) -> 701
+      Value.String(_) -> 0
+    end
+  end
+
+  @doc """
+  Decodes one text-format result column against the type OID from
+  the row description. A column the driver cannot parse as its
+  declared type passes through as `String`.
+  """
+  fn decode(type_oid: Int, column: Option<String>) -> Value
+    text =
+      match column
+        Option.Some(t) -> t
+        Option.None -> return Value.Null
+      end
+
+    match type_oid
+      16 -> Value.Bool(text == "t")
+      20 -> Value.decode_int(text)
+      21 -> Value.decode_int(text)
+      23 -> Value.decode_int(text)
+      700 -> Value.decode_float(text)
+      701 -> Value.decode_float(text)
+      _ -> Value.String(text)
+    end
+  end
+
+  priv fn decode_int(text: String) -> Value
+    match text.to_int()
+      Result.Ok(n) -> Value.Int(n)
+      Result.Err(_) -> Value.String(text)
+    end
+  end
+
+  priv fn decode_float(text: String) -> Value
+    match Float.parse(text)
+      Result.Ok(f) -> Value.Float(f)
+      Result.Err(_) -> Value.String(text)
+    end
+  end
+end

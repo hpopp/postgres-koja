@@ -1,7 +1,7 @@
 [project]
 authors = ["Henry Popp <henry@hpopp.dev>"]
 description = "A PostgreSQL driver for Koja speaking the v3 wire protocol"
-koja = "0.16"
+koja = "0.18"
 license = "MIT"
 name = "postgres"
-version = "0.2.0"
+version = "0.3.0"

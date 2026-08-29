@@ -10,7 +10,9 @@ the v3 wire protocol over TCP, with no C dependencies beyond the Koja stdlib.
 
 - Trust, cleartext password, and SCRAM-SHA-256 authentication
 - Simple query protocol (`query`) for plain SQL
-- Extended query protocol (`execute`) with `$1`-style text parameters
+- Extended query protocol (`execute`) with typed `$1`-style parameters
+- Typed results. Rows decode to `Postgres.Value` from the column types the server reports
+- Per-connection prepared statement cache with LRU eviction
 - Structured server errors carrying severity, SQLSTATE code, and message
 
 ## Installation
@@ -27,6 +29,7 @@ Postgres = { path = "../postgres" }
 ```koja
 alias Postgres.Config
 alias Postgres.Connection
+alias Postgres.Value
 
 config = Config.new("127.0.0.1", 5432, "app_user", "app_db")
   .with_password("secret")
@@ -43,25 +46,53 @@ conn =
 match outcome
   Result.Ok(result) ->
     # result.fields: List<String>
-    # result.rows:   List<List<Option<String>>> (None = SQL NULL)
+    # result.rows:   List<List<Value>> (Value.Null = SQL NULL)
     # result.tag:    command tag, e.g. "SELECT 2"
     result.rows.print()
-
-  Result.Err(e) ->
-    IO.puts(e.message())
+  Result.Err(e) -> IO.puts(e.message())
 end
 
-# Parameterized query via the extended protocol. Parameters are text,
-# so cast them in SQL. Option.None binds SQL NULL.
-params: List<Option<String>> = [Option.Some("42")]
-(conn, _) = conn.execute("SELECT name FROM users WHERE id = $1::int", params)
+# Parameterized query via the extended protocol. Parameters are typed
+# values. The driver declares their types, so the SQL needs no casts.
+# Value.Null binds SQL NULL, and `params` defaults to none.
+(conn, _) = conn.execute("SELECT name FROM users WHERE id = $1", [Value.int(42)])
 
 _ = conn.close()
 ```
 
-Every result value is the text-format string the server sent
-(`Option.None` for NULL). Interpret them with `to_int()` / `to_float()`
-as needed.
+### Values
+
+Result columns decode to `Postgres.Value` from the type OID the server
+reports for each column. The driver maps `bool` to `Value.Bool`, the
+integer family to `Value.Int`, and the float family to `Value.Float`.
+Every other type (`numeric`, timestamps, `uuid`, `json`) passes
+through as `Value.String` in the server's text format.
+
+Parameters bind the same way. `Value.Int` declares `int8`,
+`Value.Bool` declares `bool`, and `Value.Float` declares `float8`, so
+most queries need no `$1::type` casts. `Value.String` leaves the type
+for the server to infer from context.
+
+Constructors cover both required and nullable values. `Value.int(n)`
+wraps an `Int`, and `Value.opt_int(maybe)` wraps an `Option<Int>` with
+`None` becoming SQL NULL (same for `bool`, `float`, and `string`).
+Read result columns with the matching accessors. `value.as_int()`
+returns `Option<Int>`, and `value.int_or(fallback)` unwraps with a
+fallback.
+
+### Statement cache
+
+`execute` prepares each distinct statement once per connection and
+reuses it, keyed by the SQL text and parameter types. The cache holds
+`Config.statement_cache_size` statements (default 256) and evicts the
+least recently used. Set the size to 0 to turn the cache off.
+
+The cache recovers from stale statements on its own. When a schema
+change invalidates a cached plan (SQLSTATE 0A000), or the server
+dropped the statement (SQLSTATE 26000, for example a pooler ran
+`DISCARD ALL`), the driver evicts the entry, prepares the statement
+again, and retries once. Both errors fire at Bind, before the
+statement runs, so the retry cannot execute a statement twice.
 
 ### Errors
 
@@ -81,11 +112,12 @@ Every failure is a `Postgres.Error`:
 
 ## Not yet supported
 
-- Typed row decoding (values are text)
+- A row-to-struct decode protocol on top of `Postgres.Value`
 - TLS (`sslmode`). Connect over trusted networks or a local socket proxy.
 - MD5 password authentication
 - Connection pooling
 - Binary parameter/result formats
+- Decimal and date-time value types (they pass through as text)
 - SASLprep normalization of exotic Unicode passwords
 
 ## Development

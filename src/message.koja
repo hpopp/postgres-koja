@@ -40,7 +40,14 @@ priv enum Backend
   ParseComplete
   PortalSuspended
   ReadyForQuery
-  RowDescription(List<String>)
+  RowDescription(List<Field>)
+end
+
+# One column in a RowDescription, carrying the column name and the
+# type OID the server reports for it.
+priv struct Field
+  name: String
+  type_oid: Int
 end
 
 priv struct Message
@@ -85,22 +92,46 @@ priv struct Message
     <<0x70, (payload.byte_size() + 4)::32, payload>>
   end
 
-  # Builds a Parse (`P`) message for the unnamed prepared statement
-  # with no pre-declared parameter types (the server infers them).
-  fn encode_parse(sql: String) -> Binary
-    body = <<cstring(""), cstring(sql), 0::16>>
+  # Builds a Parse (`P`) message for the named prepared statement (or
+  # the unnamed one when `name` is empty) with the given declared
+  # parameter type OIDs. An OID of 0 lets the server infer that type.
+  fn encode_parse(name: String, sql: String, param_oids: List<Int>) -> Binary
+    body = <<
+      cstring(name), cstring(sql), (param_oids.length())::16,
+      encode_parse_oids(param_oids)
+    >>
+
     <<0x50, (body.byte_size() + 4)::32, body>>
   end
 
   # Builds a Bind (`B`) message that binds text-format parameters to
-  # the unnamed statement and portal, with text-format results.
-  fn encode_bind(params: List<Option<String>>) -> Binary
+  # the named statement (or the unnamed one when `statement` is empty)
+  # and the unnamed portal, with text-format results.
+  fn encode_bind(statement: String, params: List<Option<String>>) -> Binary
     body = <<
-      cstring(""), cstring(""), 0::16, (params.length())::16,
+      cstring(""), cstring(statement), 0::16, (params.length())::16,
       encode_bind_parameters(params), 0::16
     >>
 
     <<0x42, (body.byte_size() + 4)::32, body>>
+  end
+
+  # Builds a Close (`C`) message for the named prepared statement
+  # (`S` selector). The CloseComplete reply decodes to `Other`, so it
+  # can ride ahead of a Parse in one payload.
+  fn encode_close(statement: String) -> Binary
+    body = <<0x53, cstring(statement)>>
+    <<0x43, (body.byte_size() + 4)::32, body>>
+  end
+
+  priv fn encode_parse_oids(param_oids: List<Int>) -> Binary
+    out: Binary = <<>>
+
+    for oid in param_oids
+      out = <<out, oid::32>>
+    end
+
+    out
   end
 
   priv fn encode_bind_parameters(params: List<Option<String>>) -> Binary
@@ -257,7 +288,7 @@ priv struct Message
   end
 
   priv fn decode_row_description(body: Binary) -> Backend
-    fields: List<String> = List.new()
+    fields: List<Field> = List.new()
 
     match Wire.take_u16(body)
       Option.Some((count, rest)) ->
@@ -268,8 +299,11 @@ priv struct Message
     end
   end
 
-  priv fn read_fields(body: Binary, remaining: Int, acc: List<String>)
-    -> List<String>
+  # Each column carries an 18-byte tail after its name: table OID (4),
+  # attribute number (2), type OID (4), type length (2), type modifier
+  # (4), and format code (2). The driver keeps the type OID.
+  priv fn read_fields(body: Binary, remaining: Int, acc: List<Field>)
+    -> List<Field>
 
     if remaining <= 0
       return acc
@@ -277,8 +311,17 @@ priv struct Message
 
     match Wire.take_cstring(body)
       Option.Some((name, rest)) ->
-        (_, tail) = Wire.split_at(rest, 18)
-        read_fields(tail, remaining - 1, acc.append(name))
+        (_, after_position) = Wire.split_at(rest, 6)
+
+        (type_oid, after_oid) =
+          match Wire.take_u32(after_position)
+            Option.Some(taken) -> taken
+            Option.None -> return acc
+          end
+
+        (_, tail) = Wire.split_at(after_oid, 8)
+        field = Field{name: name, type_oid: type_oid}
+        read_fields(tail, remaining - 1, acc.append(field))
 
       Option.None ->
         acc

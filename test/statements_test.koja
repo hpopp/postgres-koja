@@ -1,0 +1,97 @@
+struct StatementsTest
+  @test "a zero limit disables the cache"
+  fn test_disabled -> Bool ! String
+    not StatementCache.new(0).enabled?()
+  end
+
+  @test "the key covers SQL text and parameter OIDs"
+  fn test_key -> Bool ! String
+    with_params = StatementCache.key("SELECT $1", [23, 25])
+
+    unless with_params == "SELECT $1|23|25"
+      fail "got `#{with_params}`"
+    end
+
+    no_params: List<Int> = List.new()
+
+    unless StatementCache.key("SELECT 1", no_params) == "SELECT 1"
+      fail "expected the bare SQL as the key"
+    end
+
+    true
+  end
+
+  @test "hit misses on an empty cache and finds a stored name"
+  fn test_hit_and_store -> Bool ! String
+    cache = StatementCache.new(4)
+    (cache, missed) = cache.hit("k")
+
+    match missed
+      Option.Some(name) -> fail "expected a miss, got `#{name}`"
+      Option.None -> ()
+    end
+
+    cache = cache.store("k", "koja_s1")
+    (_, found) = cache.hit("k")
+
+    match found
+      Option.Some("koja_s1") -> true
+      Option.Some(name) -> fail "expected koja_s1, got `#{name}`"
+      Option.None -> fail "expected a hit after store"
+    end
+  end
+
+  @test "reserve claims sequential statement names"
+  fn test_reserve_names -> Bool ! String
+    cache = StatementCache.new(4)
+    (cache, first, _) = cache.reserve()
+    (_, second, _) = cache.reserve()
+
+    unless first == "koja_s1" and second == "koja_s2"
+      fail "got `#{first}` and `#{second}`"
+    end
+
+    true
+  end
+
+  @test "a full cache evicts the least recently used entry"
+  fn test_lru_eviction -> Bool ! String
+    cache = StatementCache.new(2)
+    cache = cache.store("a", "koja_s1")
+    cache = cache.store("b", "koja_s2")
+
+    # Touch `a` so `b` becomes the least recently used entry.
+    (cache, _) = cache.hit("a")
+    (cache, _, close_frame) = cache.reserve()
+
+    unless close_frame == Message.encode_close("koja_s2")
+      fail "expected a Close frame for the evicted koja_s2"
+    end
+
+    (cache, kept) = cache.hit("a")
+
+    match kept
+      Option.Some(_) -> ()
+      Option.None -> fail "expected `a` to survive eviction"
+    end
+
+    (_, evicted) = cache.hit("b")
+
+    match evicted
+      Option.None -> true
+      Option.Some(_) -> fail "expected `b` to be evicted"
+    end
+  end
+
+  @test "remove drops an entry"
+  fn test_remove -> Bool ! String
+    cache = StatementCache.new(4)
+    cache = cache.store("k", "koja_s1")
+    (_, found) = cache.remove("k").hit("k")
+
+    match found
+      Option.None -> true
+      Option.Some(_) -> fail "expected the entry to be gone"
+    end
+  end
+end

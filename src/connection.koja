@@ -7,9 +7,15 @@ The connection owns its TCP socket and a read buffer that carries any
 bytes read past the last consumed message. Koja values are
 independent, so `query` returns an updated connection alongside its
 result. Rebind to the returned connection.
+
+`execute` caches prepared statements on the connection, keyed by SQL
+text and parameter types, up to `Config.statement_cache_size` entries
+with least-recently-used eviction. A repeated statement skips the
+server parse and plan step.
 """
 struct Connection
   buffer: Binary
+  cache: StatementCache
   socket: TCPSocket
 
   @doc """
@@ -21,12 +27,13 @@ struct Connection
     socket = TCPSocket.connect(config.host, config.port)
       rescue e -> fail Error.ConnectFailed(e.message())
 
-    startup = Message.encode_startup(config.user, config.database)
-    try Wire.write_all(socket, startup)
+    leftover = try Startup.negotiate(socket, config)
 
-    buffer: Binary = <<>>
-    leftover = try handshake(socket, buffer, config)
-    Connection{buffer: leftover, socket: socket}
+    Connection{
+      buffer: leftover,
+      cache: StatementCache.new(config.statement_cache_size),
+      socket: socket,
+    }
   end
 
   @doc """
@@ -34,34 +41,65 @@ struct Connection
   updated connection paired with the query outcome.
   """
   fn query(self, sql: String) -> (Connection, Result<QueryResult, Error>)
-    match Wire.write_all(self.socket, Message.encode_query(sql))
-      Result.Err(e) -> return (self, Result.Err(e))
-      Result.Ok(_) -> ()
-    end
-
-    (buffer, outcome) = collect(self.socket, self.buffer, QueryState.empty())
-    (Connection{buffer: buffer, socket: self.socket}, outcome)
+    self.run(Message.encode_query(sql))
   end
 
   @doc """
   Runs a single SQL statement with `$1`-style parameters via the
-  extended query protocol. Parameters are text-format, and
-  `Option.None` binds SQL NULL. Returns the updated connection
-  paired with the query outcome.
+  extended query protocol. Parameters are typed `Value`s, and
+  `Value.Null` binds SQL NULL. `params` defaults to none. Repeated
+  statements reuse the connection's prepared statement cache. Returns
+  the updated connection paired with the query outcome.
   """
-  fn execute(self, sql: String, params: List<Option<String>>)
+  fn execute(self, sql: String, params: List<Value> = [])
     -> (Connection, Result<QueryResult, Error>)
 
-    payload = Message.encode_parse(sql) <> Message.encode_bind(params) <>
-      DESCRIBE_PORTAL <> EXECUTE <> SYNC
+    texts = params.map(fn (p: Value) -> Option<String> p.encode() end)
+    oids = params.map(fn (p: Value) -> Int p.type_oid() end)
 
-    match Wire.write_all(self.socket, payload)
-      Result.Err(e) -> return (self, Result.Err(e))
-      Result.Ok(_) -> ()
+    unless self.cache.enabled?()
+      payload = Message.encode_parse("", sql, oids) <>
+        Message.encode_bind("", texts) <> DESCRIBE_PORTAL <> EXECUTE <> SYNC
+
+      return self.run(payload)
     end
 
-    (buffer, outcome) = collect(self.socket, self.buffer, QueryState.empty())
-    (Connection{buffer: buffer, socket: self.socket}, outcome)
+    key = StatementCache.key(sql, oids)
+    (cache, cached) = self.cache.hit(key)
+    self.cache = cache
+
+    match cached
+      Option.Some(name) ->
+        (conn, outcome) = self.run(
+          Message.encode_bind(name, texts) <> DESCRIBE_PORTAL <> EXECUTE <> SYNC,
+        )
+
+        match outcome
+          Result.Err(e) ->
+            unless stale_statement?(e)
+              return (conn, outcome)
+            end
+
+            # The cached statement can no longer run (schema change or
+            # the server dropped it). Both errors fire at Bind, before
+            # execution, so one retry with a fresh statement is safe.
+            conn.cache = conn.cache.remove(key)
+            conn.prepare_and_run(
+              key,
+              sql,
+              oids,
+              texts,
+              Message.encode_close(name),
+            )
+
+          Result.Ok(_) ->
+            (conn, outcome)
+        end
+
+      Option.None ->
+        empty: Binary = <<>>
+        self.prepare_and_run(key, sql, oids, texts, empty)
+    end
   end
 
   @doc """
@@ -72,106 +110,47 @@ struct Connection
     self.socket.close() rescue e -> fail Error.IO(e.message())
   end
 
-  # Pumps startup-phase messages until the server reports
-  # ReadyForQuery, and answers authentication requests along the way.
-  priv fn handshake(socket: TCPSocket, buffer: Binary, config: Config)
-    -> Binary ! Error
-
-    (message, leftover) = try Wire.read_message(socket, buffer)
-
-    match Message.decode(message)
-      Backend.ReadyForQuery ->
-        leftover
-
-      Backend.ErrorResponse(server_error) ->
-        fail Error.Server(server_error)
-
-      Backend.AuthenticationCleartextPassword ->
-        password = try require_password(config)
-        try Wire.write_all(socket, Message.encode_password(password))
-        try handshake(socket, leftover, config)
-
-      Backend.AuthenticationSASL(mechanisms) ->
-        leftover = try sasl_authenticate(socket, leftover, config, mechanisms)
-        try handshake(socket, leftover, config)
-
-      Backend.AuthenticationOther(kind) ->
-        fail Error.UnsupportedAuthentication(auth_method_name(kind))
-
-      _ ->
-        try handshake(socket, leftover, config)
-    end
-  end
-
-  # Runs the SCRAM-SHA-256 exchange: client-first, server-first,
-  # client-final, server-final (verified). Returns the unconsumed
-  # read buffer. The AuthenticationOk and ReadyForQuery messages
-  # that follow stay in the buffer for `handshake`.
-  priv fn sasl_authenticate(
-    socket: TCPSocket,
-    buffer: Binary,
-    config: Config,
-    mechanisms: List<String>,
-  ) -> Binary ! Error
-
-    unless mechanisms.any?(m -> m == "SCRAM-SHA-256")
-      fail Error.UnsupportedAuthentication("server offered no supported SASL mechanism")
+  # Writes one payload and collects the response stream into a result.
+  priv fn run(self, payload: Binary) -> (Connection, Result<QueryResult, Error>)
+    match Wire.write_all(self.socket, payload)
+      Result.Err(e) -> return (self, Result.Err(e))
+      Result.Ok(_) -> ()
     end
 
-    password = try require_password(config)
-
-    nonce = Scram.generate_nonce()
-    initial = Message.encode_sasl_initial(
-      "SCRAM-SHA-256",
-      Scram.first_message("", nonce),
-    )
-
-    try Wire.write_all(socket, initial)
-
-    (continue_message, continue_buffer) = try read_auth_message(socket, buffer)
-
-    server_first =
-      match continue_message
-        Backend.AuthenticationSASLContinue(text) -> text
-        Backend.ErrorResponse(server_error) -> fail Error.Server(server_error)
-        _ -> fail Error.Protocol("expected SASL continue message")
-      end
-
-    proof = Scram.proof(password, "", nonce, server_first)
-      rescue e -> fail Error.AuthenticationFailed(e)
-
-    try Wire.write_all(socket, Message.encode_sasl_response(proof.client_final))
-
-    (final_message, final_buffer) = try read_auth_message(
-      socket,
-      continue_buffer,
-    )
-
-    server_final =
-      match final_message
-        Backend.AuthenticationSASLFinal(text) -> text
-        Backend.ErrorResponse(server_error) -> fail Error.Server(server_error)
-        _ -> fail Error.Protocol("expected SASL final message")
-      end
-
-    Scram.verify_server_final(server_final, proof.server_signature)
-      rescue e -> fail Error.AuthenticationFailed(e)
-
-    final_buffer
+    (buffer, outcome) = collect(self.socket, self.buffer, QueryState.empty())
+    self.buffer = buffer
+    (self, outcome)
   end
 
-  # Reads and decodes one message during the SASL exchange.
-  priv fn read_auth_message(socket: TCPSocket, buffer: Binary)
-    -> (Backend, Binary) ! Error
+  # Prepares a fresh named statement for `key`, runs it, and caches
+  # the name on success. `stale_close` carries a Close frame for a
+  # stale statement being replaced, or an empty binary.
+  priv fn prepare_and_run(
+    self,
+    key: String,
+    sql: String,
+    oids: List<Int>,
+    texts: List<Option<String>>,
+    stale_close: Binary,
+  ) -> (Connection, Result<QueryResult, Error>)
 
-    (message, leftover) = try Wire.read_message(socket, buffer)
-    (Message.decode(message), leftover)
-  end
+    (cache, name, close_frame) = self.cache.reserve()
+    self.cache = cache
 
-  priv fn require_password(config: Config) -> String ! Error
-    try config.password.or_err(
-      Error.AuthenticationFailed("server requested a password but none was configured"),
-    )
+    payload = stale_close <> close_frame <>
+      Message.encode_parse(name, sql, oids) <>
+      Message.encode_bind(name, texts) <> DESCRIBE_PORTAL <> EXECUTE <> SYNC
+
+    (conn, outcome) = self.run(payload)
+
+    match outcome
+      Result.Ok(_) ->
+        conn.cache = conn.cache.store(key, name)
+        (conn, outcome)
+
+      Result.Err(_) ->
+        (conn, outcome)
+    end
   end
 
   priv fn collect(socket: TCPSocket, buffer: Binary, state: QueryState)
@@ -216,30 +195,40 @@ end
 
 @doc """
 The result of a successful query: column names, the rows (each a list
-of nullable text values), and the command tag (e.g. "INSERT 0 1").
+of typed `Value`s decoded against the server's column types), and the
+command tag (e.g. "INSERT 0 1").
 """
 struct QueryResult
   fields: List<String>
-  rows: List<List<Option<String>>>
+  rows: List<List<Value>>
   tag: String
 end
 
 # Accumulator threaded through the read loop that consumes a query's
-# response stream.
+# response stream. Rows decode against the RowDescription type OIDs
+# as they arrive.
 priv struct QueryState
   error: Option<ServerError>
-  fields: List<String>
-  rows: List<List<Option<String>>>
+  fields: List<Field>
+  rows: List<List<Value>>
   tag: String
 
   fn empty -> QueryState
-    fields: List<String> = List.new()
-    rows: List<List<Option<String>>> = List.new()
+    fields: List<Field> = List.new()
+    rows: List<List<Value>> = List.new()
     QueryState{error: Option.None, fields: fields, rows: rows, tag: ""}
   end
 
   fn add_row(self, columns: List<Option<String>>) -> QueryState
-    self.rows = self.rows.append(columns)
+    row: List<Value> = List.new()
+    index = 0
+
+    for column in columns
+      row = row.append(Value.decode(self.oid_at(index), column))
+      index = index + 1
+    end
+
+    self.rows = self.rows.append(row)
     self
   end
 
@@ -248,7 +237,7 @@ priv struct QueryState
     self
   end
 
-  fn with_fields(self, fields: List<String>) -> QueryState
+  fn with_fields(self, fields: List<Field>) -> QueryState
     self.fields = fields
     self
   end
@@ -265,10 +254,19 @@ priv struct QueryState
 
       Option.None ->
         Result.Ok(QueryResult{
-          fields: self.fields,
+          fields: self.fields.map(fn (f: Field) -> String f.name end),
           rows: self.rows,
           tag: self.tag,
         })
+    end
+  end
+
+  # The type OID for a column position, or 0 (unknown) when the row
+  # is wider than its description.
+  priv fn oid_at(self, index: Int) -> Int
+    match self.fields.get(index)
+      Option.Some(field) -> field.type_oid
+      Option.None -> 0
     end
   end
 end

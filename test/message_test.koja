@@ -139,11 +139,11 @@ struct MessageTest
     end
   end
 
-  @test "decode reads column names from RowDescription"
+  @test "decode reads column names and type OIDs from RowDescription"
   fn test_decode_row_description -> Result<Bool, String>
     body = <<
-      2::16, MessageTest.cstring("id"), MessageTest.field_metadata(),
-      MessageTest.cstring("name"), MessageTest.field_metadata()
+      2::16, MessageTest.cstring("id"), MessageTest.field_metadata(23),
+      MessageTest.cstring("name"), MessageTest.field_metadata(25)
     >>
 
     match Message.decode(MessageTest.frame(84, body))
@@ -152,12 +152,12 @@ struct MessageTest
           return Result.Err("expected 2 fields, got #{fields.length()}")
         end
 
-        match MessageTest.expect_string(fields.get(0), "id")
+        match MessageTest.expect_field(fields.get(0), "id", 23)
           Result.Err(e) -> return Result.Err(e)
           Result.Ok(_) -> ()
         end
 
-        MessageTest.expect_string(fields.get(1), "name")
+        MessageTest.expect_field(fields.get(1), "name", 25)
 
       _ ->
         Result.Err("expected Backend.RowDescription")
@@ -194,9 +194,10 @@ struct MessageTest
     end
   end
 
-  @test "encode_parse frames the unnamed statement"
+  @test "encode_parse frames the unnamed statement with no types"
   fn test_encode_parse -> Result<Bool, String>
-    encoded = Message.encode_parse("SELECT $1")
+    no_oids: List<Int> = []
+    encoded = Message.encode_parse("", "SELECT $1", no_oids)
 
     match encoded
       <<tag::8, len::32, body: Binary>> ->
@@ -239,10 +240,42 @@ struct MessageTest
     end
   end
 
+  @test "encode_parse declares a name and parameter type OIDs"
+  fn test_encode_parse_named -> Result<Bool, String>
+    oids: List<Int> = [20, 16]
+    encoded = Message.encode_parse("s1", "SELECT $1, $2", oids)
+
+    match encoded
+      <<0x50, _len::32, body: Binary>> ->
+        (name, rest) =
+          match Wire.take_cstring(body)
+            Option.Some(p) -> p
+            Option.None -> return Result.Err("missing statement name")
+          end
+
+        unless name == "s1"
+          return Result.Err("expected statement `s1`, got `#{name}`")
+        end
+
+        (_, rest) =
+          match Wire.take_cstring(rest)
+            Option.Some(p) -> p
+            Option.None -> return Result.Err("missing SQL text")
+          end
+
+        rest == <<2::16, 20::32, 16::32>>
+          ? Result.Ok(true)
+          : Result.Err("expected int8 and bool OIDs, got #{rest}")
+
+      _ ->
+        Result.Err("parse message shorter than its header")
+    end
+  end
+
   @test "encode_bind carries text and NULL parameters"
   fn test_encode_bind -> Result<Bool, String>
     params: List<Option<String>> = [Option.Some("42"), Option.None]
-    encoded = Message.encode_bind(params)
+    encoded = Message.encode_bind("", params)
 
     match encoded
       <<tag::8, len::32, body: Binary>> ->
@@ -265,6 +298,36 @@ struct MessageTest
       _ ->
         Result.Err("bind message shorter than its header")
     end
+  end
+
+  @test "encode_bind names the statement it binds"
+  fn test_encode_bind_named -> Result<Bool, String>
+    no_params: List<Option<String>> = []
+    encoded = Message.encode_bind("s7", no_params)
+
+    match encoded
+      <<0x42, _len::32, body: Binary>> ->
+        # Body: portal "", statement "s7", 0 format codes, 0 params,
+        # 0 result formats.
+        expected = <<0, 115, 55, 0, 0::16, 0::16, 0::16>>
+
+        body == expected
+          ? Result.Ok(true)
+          : Result.Err("bind body #{body} != expected #{expected}")
+
+      _ ->
+        Result.Err("bind message shorter than its header")
+    end
+  end
+
+  @test "encode_close frames a statement Close"
+  fn test_encode_close -> Result<Bool, String>
+    encoded = Message.encode_close("s3")
+    expected = <<0x43, 8::32, 0x53, 115, 51, 0>>
+
+    encoded == expected
+      ? Result.Ok(true)
+      : Result.Err("close frame #{encoded} != expected #{expected}")
   end
 
   @test "DESCRIBE_PORTAL, EXECUTE, and SYNC frame correctly"
@@ -334,18 +397,22 @@ struct MessageTest
   # The 18 bytes of per-field metadata (table oid, attribute number,
   # type oid, type size, type modifier, format code) that follow each
   # name in a RowDescription.
-  priv fn field_metadata -> Binary
-    <<0::32, 0::32, 0::32, 0::32, 0::16>>
+  priv fn field_metadata(type_oid: Int) -> Binary
+    <<0::32, 0::16, type_oid::32, 0::16, 0::32, 0::16>>
   end
 
-  priv fn expect_string(actual: Option<String>, want: String)
+  priv fn expect_field(actual: Option<Field>, want: String, want_oid: Int)
     -> Result<Bool, String>
 
     match actual
-      Option.Some(s) ->
-        s == want
+      Option.Some(field) ->
+        unless field.name == want
+          return Result.Err("expected `#{want}`, got `#{field.name}`")
+        end
+
+        field.type_oid == want_oid
           ? Result.Ok(true)
-          : Result.Err("expected `#{want}`, got `#{s}`")
+          : Result.Err("expected OID #{want_oid} for `#{want}`, got #{field.type_oid}")
 
       Option.None ->
         Result.Err("expected `#{want}`, got None")
