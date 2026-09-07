@@ -5,82 +5,84 @@ priv const RFC_SERVER_FIRST: String = "r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxF
 
 struct ScramTest
   @test "computes the RFC 7677 client proof"
-  fn test_rfc_client_final -> Result<Bool, String>
+  fn test_rfc_client_final ! String
     proof =
       match Scram.proof("pencil", "user", RFC_CLIENT_NONCE, RFC_SERVER_FIRST)
         Result.Ok(p) -> p
-        Result.Err(e) -> return Result.Err(e)
+        Result.Err(e) -> fail e
       end
 
     expected = "c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ="
 
-    proof.client_final == expected
-      ? Result.Ok(true)
-      : Result.Err("client-final mismatch:\n  got  #{proof.client_final}\n  want #{expected}")
+    if proof.client_final != expected
+      fail "client-final mismatch:\n  got  #{proof.client_final}\n  want #{expected}"
+    end
   end
 
   @test "computes the RFC 7677 server signature"
-  fn test_rfc_server_signature -> Result<Bool, String>
+  fn test_rfc_server_signature ! String
     proof =
       match Scram.proof("pencil", "user", RFC_CLIENT_NONCE, RFC_SERVER_FIRST)
         Result.Ok(p) -> p
-        Result.Err(e) -> return Result.Err(e)
+        Result.Err(e) -> fail e
       end
 
     expected = "6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4="
 
-    unless proof.server_signature == expected
-      return Result.Err("server signature mismatch: got #{proof.server_signature}")
+    if proof.server_signature != expected
+      fail "server signature mismatch: got #{proof.server_signature}"
     end
 
     match Scram.verify_server_final("v=" <> expected, proof.server_signature)
-      Result.Ok(_) -> Result.Ok(true)
-      Result.Err(e) -> Result.Err(e)
+      Result.Ok(_) -> ()
+      Result.Err(e) -> fail e
     end
   end
 
   @test "rejects a wrong server signature"
-  fn test_verify_rejects_bad_signature -> Result<Bool, String>
+  fn test_verify_rejects_bad_signature ! String
     match Scram.verify_server_final("v=AAAA", "BBBB")
-      Result.Ok(_) -> Result.Err("expected verification to fail")
-      Result.Err(_) -> Result.Ok(true)
+      Result.Ok(_) -> fail "expected verification to fail"
+      Result.Err(_) -> ()
     end
   end
 
   @test "rejects a server nonce that drops the client nonce"
-  fn test_rejects_foreign_nonce -> Result<Bool, String>
+  fn test_rejects_foreign_nonce ! String
     tampered = "r=stolen-nonce,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096"
 
     match Scram.proof("pencil", "user", RFC_CLIENT_NONCE, tampered)
-      Result.Ok(_) -> Result.Err("expected foreign nonce to be rejected")
-      Result.Err(_) -> Result.Ok(true)
+      Result.Ok(_) -> fail "expected foreign nonce to be rejected"
+      Result.Err(_) -> ()
     end
   end
 
   @test "rejects malformed server-first messages"
-  fn test_rejects_malformed_server_first -> Result<Bool, String>
+  fn test_rejects_malformed_server_first ! String
     match Scram.proof("pencil", "user", RFC_CLIENT_NONCE, "garbage")
-      Result.Ok(_) -> return Result.Err("expected garbage to be rejected")
+      Result.Ok(_) -> fail "expected garbage to be rejected"
       Result.Err(_) -> ()
     end
 
     missing_iterations = "r=rOprNGfwEbeRWgbNEkqOabc,s=W22ZaJ0SNY7soEsUEjb6gQ=="
 
     match Scram.proof("pencil", "user", RFC_CLIENT_NONCE, missing_iterations)
-      Result.Ok(_) -> Result.Err("expected missing iterations to be rejected")
-      Result.Err(_) -> Result.Ok(true)
+      Result.Ok(_) -> fail "expected missing iterations to be rejected"
+      Result.Err(_) -> ()
     end
   end
 
   @test "generated nonces are printable and distinct"
-  fn test_generate_nonce -> Result<Bool, String>
+  fn test_generate_nonce ! String
     a = Scram.generate_nonce()
     b = Scram.generate_nonce()
 
-    unless a.length() == 24
-      return Result.Err("expected 24-char nonce, got #{a.length()}")
+    if a.length() != 24
+      fail "expected 24-char nonce, got #{a.length()}"
     end
 
-    a == b ? Result.Err("two nonces were identical") : Result.Ok(true)
+    if a == b
+      fail "two nonces were identical"
+    end
   end
 end
