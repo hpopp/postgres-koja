@@ -57,7 +57,7 @@ priv struct Startup
     mechanisms: List<String>,
   ) -> Binary ! Error
 
-    unless mechanisms.any?(m -> m == "SCRAM-SHA-256")
+    if not mechanisms.any?(m -> m == "SCRAM-SHA-256")
       fail Error.UnsupportedAuthentication("server offered no supported SASL mechanism")
     end
 

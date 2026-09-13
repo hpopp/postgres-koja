@@ -57,7 +57,7 @@ struct Connection
     texts = params.map(fn (p: Value) -> Option<String> p.encode() end)
     oids = params.map(fn (p: Value) -> Int p.type_oid() end)
 
-    unless self.cache.enabled?()
+    if not self.cache.enabled?()
       payload = Message.encode_parse("", sql, oids) <>
         Message.encode_bind("", texts) <> DESCRIBE_PORTAL <> EXECUTE <> SYNC
 
@@ -76,7 +76,7 @@ struct Connection
 
         match outcome
           Result.Err(e) ->
-            unless stale_statement?(e)
+            if not stale_statement?(e)
               return (conn, outcome)
             end
 

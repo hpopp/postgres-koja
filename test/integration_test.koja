@@ -8,78 +8,54 @@ priv const TEST_PORT: Int = 5434
 
 struct IntegrationTest
   @test "connects with trust auth and runs SELECT"
-  fn test_trust_select -> Result<Bool, String>
-    conn =
-      match IntegrationTest.connect_trust()
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+  fn test_trust_select ! String
+    conn = try IntegrationTest.connect_trust()
 
     (conn, outcome) = conn.query("SELECT 1 AS one, 'two' AS two")
     _ = conn.close()
 
-    result =
-      match outcome
-        Result.Ok(r) -> r
-        Result.Err(e) -> return Result.Err(e.message())
-      end
+    result = outcome rescue e -> fail e.message()
 
-    unless result.tag == "SELECT 1"
-      return Result.Err("expected tag `SELECT 1`, got `#{result.tag}`")
+    if result.tag != "SELECT 1"
+      fail "expected tag `SELECT 1`, got `#{result.tag}`"
     end
 
-    unless result.fields.length() == 2
-      return Result.Err("expected 2 fields, got #{result.fields.length()}")
+    if result.fields.length() != 2
+      fail "expected 2 fields, got #{result.fields.length()}"
     end
 
-    unless IntegrationTest.cell(result, 0, 0) == Value.Int(1)
-      return Result.Err("expected Int(1) at (0,0)")
+    if IntegrationTest.cell(result, 0, 0) != Value.Int(1)
+      fail "expected Int(1) at (0,0)"
     end
 
-    IntegrationTest.cell(result, 0, 1) == Value.String("two")
-      ? Result.Ok(true)
-      : Result.Err("expected String(two) at (0,1)")
+    if IntegrationTest.cell(result, 0, 1) != Value.String("two")
+      fail "expected String(two) at (0,1)"
+    end
   end
 
   @test "returns NULL columns as None"
-  fn test_null_column -> Result<Bool, String>
-    conn =
-      match IntegrationTest.connect_trust()
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+  fn test_null_column ! String
+    conn = try IntegrationTest.connect_trust()
 
     (conn, outcome) = conn.query("SELECT NULL AS nothing")
     _ = conn.close()
 
-    result =
-      match outcome
-        Result.Ok(r) -> r
-        Result.Err(e) -> return Result.Err(e.message())
-      end
+    result = outcome rescue e -> fail e.message()
 
     match IntegrationTest.cell(result, 0, 0)
-      Value.Null -> Result.Ok(true)
-      other -> Result.Err("expected Null, got #{other.format()}")
+      Value.Null -> ()
+      other -> fail "expected Null, got #{other.format()}"
     end
   end
 
   @test "decodes bool, int, float, text, and NULL to typed values"
-  fn test_typed_round_trip -> Result<Bool, String>
-    conn =
-      match IntegrationTest.connect_trust()
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+  fn test_typed_round_trip ! String
+    conn = try IntegrationTest.connect_trust()
 
     (conn, outcome) = conn.query("SELECT true, 42, 1.5::float8, 'hi', NULL")
     _ = conn.close()
 
-    result =
-      match outcome
-        Result.Ok(r) -> r
-        Result.Err(e) -> return Result.Err(e.message())
-      end
+    result = outcome rescue e -> fail e.message()
 
     expected: List<Value> = [
       Value.Bool(true), Value.Int(42), Value.Float(1.5), Value.String("hi"),
@@ -91,23 +67,17 @@ struct IntegrationTest
     for want in expected
       got = IntegrationTest.cell(result, 0, index)
 
-      unless got == want
-        return Result.Err("column #{index} decoded to #{got.format()}, want #{want.format()}")
+      if got != want
+        fail "column #{index} decoded to #{got.format()}, want #{want.format()}"
       end
 
       index = index + 1
     end
-
-    Result.Ok(true)
   end
 
   @test "runs DDL and DML with the right command tags"
-  fn test_ddl_and_dml_tags -> Result<Bool, String>
-    conn =
-      match IntegrationTest.connect_trust()
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+  fn test_ddl_and_dml_tags ! String
+    conn = try IntegrationTest.connect_trust()
 
     (conn, created) = conn.query(
       "CREATE TEMP TABLE driver_test (id INT, label TEXT)",
@@ -116,7 +86,7 @@ struct IntegrationTest
     match IntegrationTest.expect_tag(created, "CREATE TABLE")
       Result.Err(e) ->
         _ = conn.close()
-        return Result.Err(e)
+        fail e
 
       Result.Ok(_) ->
         ()
@@ -129,7 +99,7 @@ struct IntegrationTest
     match IntegrationTest.expect_tag(inserted, "INSERT 0 2")
       Result.Err(e) ->
         _ = conn.close()
-        return Result.Err(e)
+        fail e
 
       Result.Ok(_) ->
         ()
@@ -138,115 +108,103 @@ struct IntegrationTest
     (conn, selected) = conn.query("SELECT label FROM driver_test ORDER BY id")
     _ = conn.close()
 
-    result =
-      match selected
-        Result.Ok(r) -> r
-        Result.Err(e) -> return Result.Err(e.message())
-      end
+    result = selected rescue e -> fail e.message()
 
-    unless result.rows.length() == 2
-      return Result.Err("expected 2 rows, got #{result.rows.length()}")
+    if result.rows.length() != 2
+      fail "expected 2 rows, got #{result.rows.length()}"
     end
 
-    unless IntegrationTest.cell(result, 0, 0) == Value.String("seven")
-      return Result.Err("expected String(seven) in row 0")
+    if IntegrationTest.cell(result, 0, 0) != Value.String("seven")
+      fail "expected String(seven) in row 0"
     end
 
     match IntegrationTest.cell(result, 1, 0)
-      Value.Null -> Result.Ok(true)
-      other -> Result.Err("expected Null, got #{other.format()}")
+      Value.Null -> ()
+      other -> fail "expected Null, got #{other.format()}"
     end
   end
 
   @test "surfaces server errors with severity and SQLSTATE"
-  fn test_server_error -> Result<Bool, String>
-    conn =
-      match IntegrationTest.connect_trust()
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+  fn test_server_error ! String
+    conn = try IntegrationTest.connect_trust()
 
     (conn, outcome) = conn.query("SELEC 1")
     _ = conn.close()
 
     match outcome
       Result.Ok(_) ->
-        Result.Err("expected a syntax error, got a result")
+        fail "expected a syntax error, got a result"
 
       Result.Err(Error.Server(server_error)) ->
-        unless server_error.code == "42601"
-          return Result.Err("expected SQLSTATE 42601, got #{server_error.code}")
+        if server_error.code != "42601"
+          fail "expected SQLSTATE 42601, got #{server_error.code}"
         end
 
-        server_error.severity == "ERROR"
-          ? Result.Ok(true)
-          : Result.Err("expected severity ERROR, got #{server_error.severity}")
+        if server_error.severity != "ERROR"
+          fail "expected severity ERROR, got #{server_error.severity}"
+        end
 
       Result.Err(e) ->
-        Result.Err("expected Error.Server, got: " <> e.message())
+        fail "expected Error.Server, got: " <> e.message()
     end
   end
 
   @test "connects with a cleartext password"
-  fn test_cleartext_auth -> Result<Bool, String>
+  fn test_cleartext_auth ! String
     config = Config.new(TEST_HOST, TEST_PORT, "koja_password", TEST_DATABASE)
       .with_password("koja_password_secret")
 
-    IntegrationTest.connect_and_select_user(config, "koja_password")
+    try IntegrationTest.connect_and_select_user(config, "koja_password")
   end
 
   @test "connects with SCRAM-SHA-256"
-  fn test_scram_auth -> Result<Bool, String>
+  fn test_scram_auth ! String
     config = Config.new(TEST_HOST, TEST_PORT, "koja_scram", TEST_DATABASE)
       .with_password("koja_scram_secret")
 
-    IntegrationTest.connect_and_select_user(config, "koja_scram")
+    try IntegrationTest.connect_and_select_user(config, "koja_scram")
   end
 
   @test "rejects a wrong SCRAM password"
-  fn test_scram_wrong_password -> Result<Bool, String>
+  fn test_scram_wrong_password ! String
     config = Config.new(TEST_HOST, TEST_PORT, "koja_scram", TEST_DATABASE)
       .with_password("wrong")
 
     match Connection.connect(config)
       Result.Ok(conn) ->
         _ = conn.close()
-        Result.Err("expected authentication to fail")
+        fail "expected authentication to fail"
 
       Result.Err(Error.Server(server_error)) ->
-        server_error.code == "28P01"
-          ? Result.Ok(true)
-          : Result.Err("expected SQLSTATE 28P01, got #{server_error.code}")
+        if server_error.code != "28P01"
+          fail "expected SQLSTATE 28P01, got #{server_error.code}"
+        end
 
       Result.Err(e) ->
-        Result.Err("expected a server error, got: " <> e.message())
+        fail "expected a server error, got: " <> e.message()
     end
   end
 
   @test "fails clearly when a password is needed but missing"
-  fn test_missing_password -> Result<Bool, String>
+  fn test_missing_password ! String
     config = Config.new(TEST_HOST, TEST_PORT, "koja_scram", TEST_DATABASE)
 
     match Connection.connect(config)
       Result.Ok(conn) ->
         _ = conn.close()
-        Result.Err("expected connect to fail without a password")
+        fail "expected connect to fail without a password"
 
       Result.Err(Error.AuthenticationFailed(_)) ->
-        Result.Ok(true)
+        ()
 
       Result.Err(e) ->
-        Result.Err("expected AuthenticationFailed, got: " <> e.message())
+        fail "expected AuthenticationFailed, got: " <> e.message()
     end
   end
 
   @test "executes a typed parameterized SELECT without casts"
-  fn test_execute_select -> Result<Bool, String>
-    conn =
-      match IntegrationTest.connect_trust()
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+  fn test_execute_select ! String
+    conn = try IntegrationTest.connect_trust()
 
     # Declared parameter OIDs type $1 and $2 as int8, so the SQL
     # needs no ::int casts.
@@ -254,28 +212,20 @@ struct IntegrationTest
     (conn, outcome) = conn.execute("SELECT $1 + $2 AS total", params)
     _ = conn.close()
 
-    result =
-      match outcome
-        Result.Ok(r) -> r
-        Result.Err(e) -> return Result.Err(e.message())
-      end
+    result = outcome rescue e -> fail e.message()
 
-    unless result.tag == "SELECT 1"
-      return Result.Err("expected tag `SELECT 1`, got `#{result.tag}`")
+    if result.tag != "SELECT 1"
+      fail "expected tag `SELECT 1`, got `#{result.tag}`"
     end
 
-    IntegrationTest.cell(result, 0, 0) == Value.Int(42)
-      ? Result.Ok(true)
-      : Result.Err("expected Int(42) total")
+    if IntegrationTest.cell(result, 0, 0) != Value.Int(42)
+      fail "expected Int(42) total"
+    end
   end
 
   @test "executes DML with NULL parameters and reads them back"
-  fn test_execute_null_param -> Result<Bool, String>
-    conn =
-      match IntegrationTest.connect_trust()
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+  fn test_execute_null_param ! String
+    conn = try IntegrationTest.connect_trust()
 
     (conn, created) = conn.execute(
       "CREATE TEMP TABLE exec_test (id INT, label TEXT)",
@@ -284,7 +234,7 @@ struct IntegrationTest
     match IntegrationTest.expect_tag(created, "CREATE TABLE")
       Result.Err(e) ->
         _ = conn.close()
-        return Result.Err(e)
+        fail e
 
       Result.Ok(_) ->
         ()
@@ -299,7 +249,7 @@ struct IntegrationTest
     match IntegrationTest.expect_tag(inserted, "INSERT 0 1")
       Result.Err(e) ->
         _ = conn.close()
-        return Result.Err(e)
+        fail e
 
       Result.Ok(_) ->
         ()
@@ -312,54 +262,42 @@ struct IntegrationTest
     )
     _ = conn.close()
 
-    result =
-      match selected
-        Result.Ok(r) -> r
-        Result.Err(e) -> return Result.Err(e.message())
-      end
+    result = selected rescue e -> fail e.message()
 
-    unless result.rows.length() == 1
-      return Result.Err("expected 1 row, got #{result.rows.length()}")
+    if result.rows.length() != 1
+      fail "expected 1 row, got #{result.rows.length()}"
     end
 
     match IntegrationTest.cell(result, 0, 0)
-      Value.Null -> Result.Ok(true)
-      other -> Result.Err("expected Null label, got #{other.format()}")
+      Value.Null -> ()
+      other -> fail "expected Null label, got #{other.format()}"
     end
   end
 
   @test "surfaces server errors from execute"
-  fn test_execute_server_error -> Result<Bool, String>
-    conn =
-      match IntegrationTest.connect_trust()
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+  fn test_execute_server_error ! String
+    conn = try IntegrationTest.connect_trust()
 
     (conn, outcome) = conn.execute("SELECT * FROM missing_table")
     _ = conn.close()
 
     match outcome
       Result.Ok(_) ->
-        Result.Err("expected an error for a missing table")
+        fail "expected an error for a missing table"
 
       Result.Err(Error.Server(server_error)) ->
-        server_error.code == "42P01"
-          ? Result.Ok(true)
-          : Result.Err("expected SQLSTATE 42P01, got #{server_error.code}")
+        if server_error.code != "42P01"
+          fail "expected SQLSTATE 42P01, got #{server_error.code}"
+        end
 
       Result.Err(e) ->
-        Result.Err("expected Error.Server, got: " <> e.message())
+        fail "expected Error.Server, got: " <> e.message()
     end
   end
 
   @test "execute reuses a cached prepared statement"
-  fn test_statement_cache_reuse -> Result<Bool, String>
-    conn =
-      match IntegrationTest.connect_trust()
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+  fn test_statement_cache_reuse ! String
+    conn = try IntegrationTest.connect_trust()
 
     first_params = [Value.int(1)]
     (conn, first) = conn.execute("SELECT $1 AS n", first_params)
@@ -370,7 +308,7 @@ struct IntegrationTest
 
       Result.Err(e) ->
         _ = conn.close()
-        return Result.Err(e.message())
+        fail e.message()
     end
 
     second_params = [Value.int(2)]
@@ -383,42 +321,34 @@ struct IntegrationTest
 
         Result.Err(e) ->
           _ = conn.close()
-          return Result.Err(e.message())
+          fail e.message()
       end
 
-    unless IntegrationTest.cell(result, 0, 0) == Value.Int(2)
+    if IntegrationTest.cell(result, 0, 0) != Value.Int(2)
       _ = conn.close()
-      return Result.Err("expected Int(2) from the cached statement")
+      fail "expected Int(2) from the cached statement"
     end
 
     (conn, names) = IntegrationTest.prepared_names(conn)
     _ = conn.close()
 
-    listed =
-      match names
-        Result.Ok(r) -> r
-        Result.Err(e) -> return Result.Err(e)
-      end
+    listed = names rescue e -> fail e
 
-    unless listed.rows.length() == 1
-      return Result.Err("expected 1 prepared statement, got #{listed.rows.length()}")
+    if listed.rows.length() != 1
+      fail "expected 1 prepared statement, got #{listed.rows.length()}"
     end
 
-    IntegrationTest.cell(listed, 0, 0) == Value.String("koja_s1")
-      ? Result.Ok(true)
-      : Result.Err("expected statement koja_s1")
+    if IntegrationTest.cell(listed, 0, 0) != Value.String("koja_s1")
+      fail "expected statement koja_s1"
+    end
   end
 
   @test "the cache evicts the least recently used statement"
-  fn test_statement_cache_eviction -> Result<Bool, String>
+  fn test_statement_cache_eviction ! String
     config = Config.new(TEST_HOST, TEST_PORT, "koja_trust", TEST_DATABASE)
       .with_statement_cache_size(1)
 
-    conn =
-      match IntegrationTest.connect_config(config)
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+    conn = try IntegrationTest.connect_config(config)
 
     (conn, first) = conn.execute("SELECT 1 AS a")
 
@@ -428,7 +358,7 @@ struct IntegrationTest
 
       Result.Err(e) ->
         _ = conn.close()
-        return Result.Err(e.message())
+        fail e.message()
     end
 
     (conn, second) = conn.execute("SELECT 2 AS b")
@@ -439,38 +369,30 @@ struct IntegrationTest
 
       Result.Err(e) ->
         _ = conn.close()
-        return Result.Err(e.message())
+        fail e.message()
     end
 
     (conn, names) = IntegrationTest.prepared_names(conn)
     _ = conn.close()
 
-    listed =
-      match names
-        Result.Ok(r) -> r
-        Result.Err(e) -> return Result.Err(e)
-      end
+    listed = names rescue e -> fail e
 
-    unless listed.rows.length() == 1
-      return Result.Err("expected the first statement to be closed, " <>
-        "got #{listed.rows.length()} prepared")
+    if listed.rows.length() != 1
+      fail "expected the first statement to be closed, " <>
+        "got #{listed.rows.length()} prepared"
     end
 
-    IntegrationTest.cell(listed, 0, 0) == Value.String("koja_s2")
-      ? Result.Ok(true)
-      : Result.Err("expected only koja_s2 to remain")
+    if IntegrationTest.cell(listed, 0, 0) != Value.String("koja_s2")
+      fail "expected only koja_s2 to remain"
+    end
   end
 
   @test "a zero cache size prepares nothing"
-  fn test_statement_cache_disabled -> Result<Bool, String>
+  fn test_statement_cache_disabled ! String
     config = Config.new(TEST_HOST, TEST_PORT, "koja_trust", TEST_DATABASE)
       .with_statement_cache_size(0)
 
-    conn =
-      match IntegrationTest.connect_config(config)
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+    conn = try IntegrationTest.connect_config(config)
 
     params = [Value.int(7)]
     (conn, outcome) = conn.execute("SELECT $1 AS n", params)
@@ -482,35 +404,27 @@ struct IntegrationTest
 
         Result.Err(e) ->
           _ = conn.close()
-          return Result.Err(e.message())
+          fail e.message()
       end
 
-    unless IntegrationTest.cell(result, 0, 0) == Value.Int(7)
+    if IntegrationTest.cell(result, 0, 0) != Value.Int(7)
       _ = conn.close()
-      return Result.Err("expected Int(7) from the uncached statement")
+      fail "expected Int(7) from the uncached statement"
     end
 
     (conn, names) = IntegrationTest.prepared_names(conn)
     _ = conn.close()
 
-    listed =
-      match names
-        Result.Ok(r) -> r
-        Result.Err(e) -> return Result.Err(e)
-      end
+    listed = names rescue e -> fail e
 
-    listed.rows.length() == 0
-      ? Result.Ok(true)
-      : Result.Err("expected no prepared statements, got #{listed.rows.length()}")
+    if listed.rows.length() != 0
+      fail "expected no prepared statements, got #{listed.rows.length()}"
+    end
   end
 
   @test "a schema change under a cached statement re-prepares"
-  fn test_stale_statement_schema_change -> Result<Bool, String>
-    conn =
-      match IntegrationTest.connect_trust()
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+  fn test_stale_statement_schema_change ! String
+    conn = try IntegrationTest.connect_trust()
 
     setup = [
       "DROP TABLE IF EXISTS stale_plan_probe",
@@ -528,7 +442,7 @@ struct IntegrationTest
 
         Result.Err(e) ->
           _ = conn.close()
-          return Result.Err(e.message())
+          fail e.message()
       end
     end
 
@@ -540,7 +454,7 @@ struct IntegrationTest
 
       Result.Err(e) ->
         _ = conn.close()
-        return Result.Err(e.message())
+        fail e.message()
     end
 
     # Adding a column changes the result shape of `SELECT *`, which
@@ -555,7 +469,7 @@ struct IntegrationTest
 
       Result.Err(e) ->
         _ = conn.close()
-        return Result.Err(e.message())
+        fail e.message()
     end
 
     (conn, second) = conn.execute("SELECT * FROM stale_plan_probe")
@@ -566,22 +480,18 @@ struct IntegrationTest
       match second
         Result.Ok(r) -> r
         Result.Err(e) ->
-          return Result.Err("expected a re-prepare after the schema change, got: " <>
-            e.message())
+          fail "expected a re-prepare after the schema change, got: " <>
+            e.message()
       end
 
-    result.fields.length() == 2
-      ? Result.Ok(true)
-      : Result.Err("expected 2 columns after re-prepare, got #{result.fields.length()}")
+    if result.fields.length() != 2
+      fail "expected 2 columns after re-prepare, got #{result.fields.length()}"
+    end
   end
 
   @test "a deallocated statement re-prepares"
-  fn test_stale_statement_deallocated -> Result<Bool, String>
-    conn =
-      match IntegrationTest.connect_trust()
-        Result.Ok(c) -> c
-        Result.Err(e) -> return Result.Err(e)
-      end
+  fn test_stale_statement_deallocated ! String
+    conn = try IntegrationTest.connect_trust()
 
     first_params = [Value.int(1)]
     (conn, first) = conn.execute("SELECT $1 AS n", first_params)
@@ -592,7 +502,7 @@ struct IntegrationTest
 
       Result.Err(e) ->
         _ = conn.close()
-        return Result.Err(e.message())
+        fail e.message()
     end
 
     # DEALLOCATE ALL drops every prepared statement server-side, like
@@ -605,7 +515,7 @@ struct IntegrationTest
 
       Result.Err(e) ->
         _ = conn.close()
-        return Result.Err(e.message())
+        fail e.message()
     end
 
     second_params = [Value.int(9)]
@@ -617,48 +527,37 @@ struct IntegrationTest
       match second
         Result.Ok(r) -> r
         Result.Err(e) ->
-          return Result.Err("expected a re-prepare after DEALLOCATE ALL, got: " <>
-            e.message())
+          fail "expected a re-prepare after DEALLOCATE ALL, got: " <>
+            e.message()
       end
 
-    unless IntegrationTest.cell(result, 0, 0) == Value.Int(9)
-      return Result.Err("expected Int(9) from the re-prepared statement")
+    if IntegrationTest.cell(result, 0, 0) != Value.Int(9)
+      fail "expected Int(9) from the re-prepared statement"
     end
 
-    listed =
-      match names
-        Result.Ok(r) -> r
-        Result.Err(e) -> return Result.Err(e)
-      end
+    listed = names rescue e -> fail e
 
-    listed.rows.length() == 1
-      ? Result.Ok(true)
-      : Result.Err("expected 1 re-prepared statement, got #{listed.rows.length()}")
+    if listed.rows.length() != 1
+      fail "expected 1 re-prepared statement, got #{listed.rows.length()}"
+    end
   end
 
-  priv fn connect_and_select_user(config: Config, want_user: String)
-    -> Result<Bool, String>
-
+  priv fn connect_and_select_user(config: Config, want_user: String) ! String
     conn =
       match Connection.connect(config)
         Result.Ok(c) -> c
         Result.Err(e) ->
-          return Result.Err("connect failed (is docker compose up?): " <>
-            e.message())
+          fail "connect failed (is docker compose up?): " <> e.message()
       end
 
     (conn, outcome) = conn.query("SELECT current_user")
     _ = conn.close()
 
-    result =
-      match outcome
-        Result.Ok(r) -> r
-        Result.Err(e) -> return Result.Err(e.message())
-      end
+    result = outcome rescue e -> fail e.message()
 
-    IntegrationTest.cell(result, 0, 0) == Value.String(want_user)
-      ? Result.Ok(true)
-      : Result.Err("expected current_user `#{want_user}`")
+    if IntegrationTest.cell(result, 0, 0) != Value.String(want_user)
+      fail "expected current_user `#{want_user}`"
+    end
   end
 
   priv fn connect_trust -> Result<Connection, String>
@@ -706,17 +605,15 @@ struct IntegrationTest
     end
   end
 
-  priv fn expect_tag(outcome: Result<QueryResult, Error>, want: String)
-    -> Result<Bool, String>
-
+  priv fn expect_tag(outcome: Result<QueryResult, Error>, want: String) ! String
     match outcome
       Result.Ok(result) ->
-        result.tag == want
-          ? Result.Ok(true)
-          : Result.Err("expected tag `#{want}`, got `#{result.tag}`")
+        if result.tag != want
+          fail "expected tag `#{want}`, got `#{result.tag}`"
+        end
 
       Result.Err(e) ->
-        Result.Err(e.message())
+        fail e.message()
     end
   end
 end
