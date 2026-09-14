@@ -39,7 +39,7 @@ priv enum Backend
   ParameterStatus
   ParseComplete
   PortalSuspended
-  ReadyForQuery
+  ReadyForQuery(TransactionStatus)
   RowDescription(List<Field>)
 end
 
@@ -172,11 +172,22 @@ priv struct Message
       82 -> decode_auth(body)
       83 -> Backend.ParameterStatus
       84 -> decode_row_description(body)
-      90 -> Backend.ReadyForQuery
+      90 -> Backend.ReadyForQuery(decode_transaction_status(body))
       110 -> Backend.NoData
       115 -> Backend.PortalSuspended
       116 -> Backend.ParameterDescription
       _ -> Backend.Other
+    end
+  end
+
+  # The ReadyForQuery body is one status byte: `I` idle, `T` inside a
+  # transaction block, `E` inside a failed block. Anything else reads
+  # as idle so an odd server never wedges the connection.
+  priv fn decode_transaction_status(body: Binary) -> TransactionStatus
+    match body
+      <<84, _: Binary>> -> TransactionStatus.InBlock
+      <<69, _: Binary>> -> TransactionStatus.Failed
+      _ -> TransactionStatus.Idle
     end
   end
 

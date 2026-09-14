@@ -542,6 +542,120 @@ struct IntegrationTest
     end
   end
 
+  @test "a server error keeps the connection open"
+  fn test_server_error_stays_open ! String
+    conn = try IntegrationTest.connect_trust()
+
+    (conn, outcome) = conn.query("SELECT 1/0")
+
+    match outcome
+      Result.Err(Error.Server(server_error)) ->
+        if server_error.code != "22012"
+          fail "expected SQLSTATE 22012, got #{server_error.code}"
+        end
+
+      Result.Ok(_) ->
+        fail "expected a division by zero error"
+
+      Result.Err(e) ->
+        fail "expected Error.Server, got: " <> e.message()
+    end
+
+    if not conn.open?()
+      fail "a server error must not close the connection"
+    end
+
+    if not conn.idle?()
+      fail "expected idle after a server error outside a block"
+    end
+
+    (conn, outcome) = conn.query("SELECT 1")
+    _ = conn.close()
+
+    result = outcome rescue e -> fail "follow-up query failed: " <> e.message()
+
+    if IntegrationTest.cell(result, 0, 0) != Value.Int(1)
+      fail "expected Int(1) from the follow-up query"
+    end
+  end
+
+  @test "a server terminate closes the connection and later calls fail fast"
+  fn test_terminated_connection_fails_fast ! String
+    conn = try IntegrationTest.connect_trust()
+
+    (conn, outcome) = conn.query(
+      "SELECT pg_terminate_backend(pg_backend_pid())",
+    )
+    try IntegrationTest.expect_closed(outcome, "terminate")
+
+    if conn.open?()
+      fail "expected the connection to be closed after terminate"
+    end
+
+    if conn.idle?()
+      fail "a closed connection is never idle"
+    end
+
+    # Neither call touches the socket. Both report the closed state.
+    (conn, outcome) = conn.query("SELECT 1")
+    try IntegrationTest.expect_closed(outcome, "query on a closed connection")
+
+    (conn, outcome) = conn.execute("SELECT $1 AS n", [Value.int(1)])
+    try IntegrationTest.expect_closed(outcome, "execute on a closed connection")
+
+    if conn.open?()
+      fail "expected the connection to stay closed"
+    end
+  end
+
+  @test "transaction status follows the session"
+  fn test_transaction_status ! String
+    conn = try IntegrationTest.connect_trust()
+
+    if not conn.idle?()
+      fail "expected idle after connect"
+    end
+
+    (conn, _) = conn.query("BEGIN")
+
+    if conn.transaction_status != TransactionStatus.InBlock
+      fail "expected InBlock after BEGIN, got #{conn.transaction_status.format()}"
+    end
+
+    if conn.idle?()
+      fail "a connection inside a block is not idle"
+    end
+
+    (conn, _) = conn.query("SELECT 1/0")
+
+    if conn.transaction_status != TransactionStatus.Failed
+      fail "expected Failed after an error in the block, got #{conn.transaction_status.format()}"
+    end
+
+    if not conn.open?()
+      fail "a failed block must not close the connection"
+    end
+
+    (conn, _) = conn.query("ROLLBACK")
+    idle = conn.idle?()
+    _ = conn.close()
+
+    if not idle
+      fail "expected idle after ROLLBACK"
+    end
+  end
+
+  priv fn expect_closed(outcome: Result<QueryResult, Error>, context: String)
+    ! String
+
+    match outcome
+      Result.Err(Error.ConnectionClosed) -> ()
+      Result.Ok(_) -> fail "#{context}: expected ConnectionClosed, got a result"
+      Result.Err(e) ->
+        fail "#{context}: expected ConnectionClosed, got: " <> e.message()
+    end
+  end
+
   priv fn connect_and_select_user(config: Config, want_user: String) ! String
     conn =
       match Connection.connect(config)

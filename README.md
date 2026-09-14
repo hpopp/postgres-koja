@@ -106,9 +106,17 @@ Every failure is a `Postgres.Error`:
 | `Server(ServerError)`          | Server-reported error with SQLSTATE + severity           |
 | `Protocol(String)`             | Malformed or unexpected wire data                        |
 | `IO(String)`                   | Socket read/write failure                                |
-| `ConnectionClosed`             | Server closed the connection                             |
+| `ConnectionClosed`             | Server closed the connection, or it was already closed   |
 
 `error.message()` renders any variant as a human-readable string.
+
+### Connection state
+
+The connection value records whether its socket is still usable and
+the transaction status the server last reported. `conn.open?()`,
+`conn.idle?()`, and `conn.transaction_status` read that state, which
+is what a pool checks before it lends the connection again. The
+`Connection` docs describe which errors close a connection.
 
 ## Not yet supported
 
