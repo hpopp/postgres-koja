@@ -23,7 +23,7 @@ priv struct Startup
     (message, leftover) = try Wire.read_message(socket, buffer)
 
     match Message.decode(message)
-      Backend.ReadyForQuery ->
+      Backend.ReadyForQuery(_) ->
         leftover
 
       Backend.ErrorResponse(server_error) ->

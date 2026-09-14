@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-09-14
+
+### Added
+
+- `Connection.open?` reports whether the connection can still run statements. The driver marks the connection closed when a socket read or write fails, or when the stream falls out of sync (`ConnectionClosed`, `IO`, or `Protocol` errors). A `Server` error leaves it open.
+- `Connection.transaction_status` holds the status the server sends in every ReadyForQuery message, as a `Postgres.TransactionStatus`: `Idle`, `InBlock`, or `Failed`. `Connection.idle?` is true when the connection is open and not inside a transaction block, which is the state a pool checks before it lends the connection again.
+
+### Changed
+
+- A connection whose socket already failed returns `Error.ConnectionClosed` on every later call without touching the socket. Before, each call tried the dead socket and returned a fresh `IO` error.
+
 ## [0.3.0] - 2026-08-29
 
 Requires Koja 0.18.

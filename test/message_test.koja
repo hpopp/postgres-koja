@@ -90,9 +90,18 @@ struct MessageTest
     frame = MessageTest.frame(90, <<73::8>>)
 
     match Message.decode(frame)
-      Backend.ReadyForQuery -> ()
+      Backend.ReadyForQuery(_) -> ()
       _ -> fail "expected Backend.ReadyForQuery"
     end
+  end
+
+  @test "decode reads the ReadyForQuery transaction status byte"
+  fn test_decode_ready_for_query_status ! String
+    try MessageTest.expect_status(73, TransactionStatus.Idle)
+    try MessageTest.expect_status(84, TransactionStatus.InBlock)
+    try MessageTest.expect_status(69, TransactionStatus.Failed)
+    # An unknown byte reads as idle rather than wedging the connection.
+    try MessageTest.expect_status(63, TransactionStatus.Idle)
   end
 
   @test "decode extracts the CommandComplete tag"
@@ -383,6 +392,18 @@ struct MessageTest
 
   priv fn frame(tag: Int, body: Binary) -> Binary
     <<tag, (body.byte_size() + 4)::32, body>>
+  end
+
+  priv fn expect_status(byte: Int, want: TransactionStatus) ! String
+    match Message.decode(MessageTest.frame(90, <<byte::8>>))
+      Backend.ReadyForQuery(got) ->
+        if got != want
+          fail "status byte #{byte} decoded to #{got.format()}, want #{want.format()}"
+        end
+
+      _ ->
+        fail "expected Backend.ReadyForQuery for byte #{byte}"
+    end
   end
 
   priv fn cstring(s: String) -> Binary

@@ -12,11 +12,40 @@ result. Rebind to the returned connection.
 text and parameter types, up to `Config.statement_cache_size` entries
 with least-recently-used eviction. A repeated statement skips the
 server parse and plan step.
+
+## Session state
+
+The returned connection also records what the driver learned about
+the session, so a pool can inspect it before it lends the connection
+again.
+
+`open?` is false once a socket read or write failed or the stream
+fell out of sync. That is any call that returned `ConnectionClosed`,
+`IO`, or `Protocol`. A closed connection returns `ConnectionClosed`
+on every later call without touching the socket. Open a new
+connection. A `Server` error never closes the connection.
+
+`transaction_status` is the status the server sent in its last
+ReadyForQuery message, a `TransactionStatus`: `Idle`, `InBlock` after
+`BEGIN`, or `Failed` after an error inside the block. `idle?` is true
+when the connection is open and idle, which is the state a pool wants
+at checkin.
+
+```koja
+(conn, _) = conn.query("BEGIN")
+(conn, _) = conn.query("SELECT 1/0")  # Server error, block is now aborted
+conn.transaction_status == TransactionStatus.Failed  # true
+conn.open?()                                         # true
+(conn, _) = conn.query("ROLLBACK")
+conn.idle?()                                         # true
+```
 """
 struct Connection
   buffer: Binary
   cache: StatementCache
+  closed?: Bool
   socket: TCPSocket
+  transaction_status: TransactionStatus
 
   @doc """
   Opens a connection and performs the startup handshake (trust,
@@ -32,8 +61,28 @@ struct Connection
     Connection{
       buffer: leftover,
       cache: StatementCache.new(config.statement_cache_size),
+      closed?: false,
       socket: socket,
+      transaction_status: TransactionStatus.Idle,
     }
+  end
+
+  @doc """
+  False once a socket read or write failed, or the stream fell out of
+  sync. A closed connection fails every later call with
+  `Error.ConnectionClosed` without touching the socket. Open a new one.
+  """
+  fn open?(self) -> Bool
+    not self.closed?
+  end
+
+  @doc """
+  True when the connection is open and not inside a transaction
+  block. This is the state a pool wants before it lends the
+  connection again.
+  """
+  fn idle?(self) -> Bool
+    self.open?() and self.transaction_status == TransactionStatus.Idle
   end
 
   @doc """
@@ -103,7 +152,8 @@ struct Connection
   end
 
   @doc """
-  Sends a Terminate message (best effort) and closes the socket.
+  Sends a Terminate message (best effort) and closes the socket. Do
+  not use the connection value after this call.
   """
   fn close(self) ! Error
     _ = Wire.write_all(self.socket, TERMINATE)
@@ -111,15 +161,42 @@ struct Connection
   end
 
   # Writes one payload and collects the response stream into a result.
+  # Records the transaction status the server reports and marks the
+  # connection closed when the transport fails.
   priv fn run(self, payload: Binary) -> (Connection, Result<QueryResult, Error>)
+    if self.closed?
+      return (self, Result.Err(Error.ConnectionClosed))
+    end
+
     match Wire.write_all(self.socket, payload)
-      Result.Err(e) -> return (self, Result.Err(e))
+      Result.Err(e) -> return (self.settle(Result.Err(e)), Result.Err(e))
       Result.Ok(_) -> ()
     end
 
-    (buffer, outcome) = collect(self.socket, self.buffer, QueryState.empty())
+    (buffer, transaction_status, outcome) = collect(
+      self.socket,
+      self.buffer,
+      QueryState.empty(),
+      self.transaction_status,
+    )
+
     self.buffer = buffer
-    (self, outcome)
+    self.transaction_status = transaction_status
+    (self.settle(outcome), outcome)
+  end
+
+  # A transport or framing failure leaves the stream unusable. A
+  # server error does not: the protocol resyncs at the next
+  # ReadyForQuery.
+  priv fn settle(self, outcome: Result<QueryResult, Error>) -> Connection
+    match outcome
+      Result.Err(Error.ConnectionClosed) -> self.closed? = true
+      Result.Err(Error.IO(_)) -> self.closed? = true
+      Result.Err(Error.Protocol(_)) -> self.closed? = true
+      _ -> ()
+    end
+
+    self
   end
 
   # Prepares a fresh named statement for `key`, runs it, and caches
@@ -153,33 +230,40 @@ struct Connection
     end
   end
 
-  priv fn collect(socket: TCPSocket, buffer: Binary, state: QueryState)
-    -> (Binary, Result<QueryResult, Error>)
+  # Reads backend messages until ReadyForQuery. Returns the leftover
+  # buffer, the transaction status from ReadyForQuery (or the
+  # incoming one when the read fails first), and the query outcome.
+  priv fn collect(
+    socket: TCPSocket,
+    buffer: Binary,
+    state: QueryState,
+    status: TransactionStatus,
+  ) -> (Binary, TransactionStatus, Result<QueryResult, Error>)
 
     (message, leftover) =
       match Wire.read_message(socket, buffer)
         Result.Ok(p) -> p
-        Result.Err(e) -> return (buffer, Result.Err(e))
+        Result.Err(e) -> return (buffer, status, Result.Err(e))
       end
 
     match Message.decode(message)
-      Backend.ReadyForQuery ->
-        (leftover, state.finish())
+      Backend.ReadyForQuery(reported) ->
+        (leftover, reported, state.finish())
 
       Backend.RowDescription(fields) ->
-        collect(socket, leftover, state.with_fields(fields))
+        collect(socket, leftover, state.with_fields(fields), status)
 
       Backend.DataRow(columns) ->
-        collect(socket, leftover, state.add_row(columns))
+        collect(socket, leftover, state.add_row(columns), status)
 
       Backend.CommandComplete(tag) ->
-        collect(socket, leftover, state.with_tag(tag))
+        collect(socket, leftover, state.with_tag(tag), status)
 
       Backend.ErrorResponse(server_error) ->
-        collect(socket, leftover, state.with_error(server_error))
+        collect(socket, leftover, state.with_error(server_error), status)
 
       _ ->
-        collect(socket, leftover, state)
+        collect(socket, leftover, state, status)
     end
   end
 
@@ -191,6 +275,18 @@ struct Connection
       _ -> "authentication code #{kind}"
     end
   end
+end
+
+@doc """
+Where the session stands, as the server reported it in the last
+ReadyForQuery message. `InBlock` means a transaction is open.
+`Failed` means a statement inside the block errored and the block
+only accepts ROLLBACK.
+"""
+enum TransactionStatus
+  Idle
+  InBlock
+  Failed
 end
 
 @doc """
