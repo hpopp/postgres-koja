@@ -1,57 +1,38 @@
 struct StatementsTest
-  @test "a zero limit disables the cache"
-  fn test_disabled ! String
-    not StatementCache.new(0).enabled?()
+  test "a zero limit disables the cache"
+    assert not StatementCache.new(0).enabled?()
   end
 
-  @test "the key covers SQL text and parameter OIDs"
-  fn test_key ! String
-    with_params = StatementCache.key("SELECT $1", [23, 25])
-
-    if with_params != "SELECT $1|23|25"
-      fail "got `#{with_params}`"
-    end
+  test "the key covers SQL text and parameter OIDs"
+    assert StatementCache.key("SELECT $1", [23, 25]) == "SELECT $1|23|25"
 
     no_params: List<Int> = List.new()
 
-    if StatementCache.key("SELECT 1", no_params) != "SELECT 1"
-      fail "expected the bare SQL as the key"
-    end
+    assert StatementCache.key("SELECT 1", no_params) == "SELECT 1"
   end
 
-  @test "hit misses on an empty cache and finds a stored name"
-  fn test_hit_and_store ! String
+  test "hit misses on an empty cache and finds a stored name"
     cache = StatementCache.new(4)
     (cache, missed) = cache.hit("k")
 
-    match missed
-      Option.Some(name) -> fail "expected a miss, got `#{name}`"
-      Option.None -> ()
-    end
+    assert missed.none?()
 
     cache = cache.store("k", "koja_s1")
     (_, found) = cache.hit("k")
 
-    match found
-      Option.Some("koja_s1") -> ()
-      Option.Some(name) -> fail "expected koja_s1, got `#{name}`"
-      Option.None -> fail "expected a hit after store"
-    end
+    assert found == Option.Some("koja_s1")
   end
 
-  @test "reserve claims sequential statement names"
-  fn test_reserve_names ! String
+  test "reserve claims sequential statement names"
     cache = StatementCache.new(4)
     (cache, first, _) = cache.reserve()
     (_, second, _) = cache.reserve()
 
-    if not (first == "koja_s1" and second == "koja_s2")
-      fail "got `#{first}` and `#{second}`"
-    end
+    assert first == "koja_s1"
+    assert second == "koja_s2"
   end
 
-  @test "a full cache evicts the least recently used entry"
-  fn test_lru_eviction ! String
+  test "a full cache evicts the least recently used entry"
     cache = StatementCache.new(2)
     cache = cache.store("a", "koja_s1")
     cache = cache.store("b", "koja_s2")
@@ -60,34 +41,22 @@ struct StatementsTest
     (cache, _) = cache.hit("a")
     (cache, _, close_frame) = cache.reserve()
 
-    if close_frame != Message.encode_close("koja_s2")
-      fail "expected a Close frame for the evicted koja_s2"
-    end
+    assert close_frame == Message.encode_close("koja_s2")
 
     (cache, kept) = cache.hit("a")
 
-    match kept
-      Option.Some(_) -> ()
-      Option.None -> fail "expected `a` to survive eviction"
-    end
+    assert kept.some?(), "expected `a` to survive eviction"
 
     (_, evicted) = cache.hit("b")
 
-    match evicted
-      Option.None -> ()
-      Option.Some(_) -> fail "expected `b` to be evicted"
-    end
+    assert evicted.none?(), "expected `b` to be evicted"
   end
 
-  @test "remove drops an entry"
-  fn test_remove ! String
+  test "remove drops an entry"
     cache = StatementCache.new(4)
     cache = cache.store("k", "koja_s1")
     (_, found) = cache.remove("k").hit("k")
 
-    match found
-      Option.None -> ()
-      Option.Some(_) -> fail "expected the entry to be gone"
-    end
+    assert found.none?()
   end
 end

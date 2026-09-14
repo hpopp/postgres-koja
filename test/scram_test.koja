@@ -4,85 +4,52 @@ priv const RFC_CLIENT_NONCE: String = "rOprNGfwEbeRWgbNEkqO"
 priv const RFC_SERVER_FIRST: String = "r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096"
 
 struct ScramTest
-  @test "computes the RFC 7677 client proof"
-  fn test_rfc_client_final ! String
-    proof =
-      match Scram.proof("pencil", "user", RFC_CLIENT_NONCE, RFC_SERVER_FIRST)
-        Result.Ok(p) -> p
-        Result.Err(e) -> fail e
-      end
+  test "computes the RFC 7677 client proof"
+    proof = try Test.require(
+      Scram.proof("pencil", "user", RFC_CLIENT_NONCE, RFC_SERVER_FIRST),
+    )
 
     expected = "c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ="
 
-    if proof.client_final != expected
-      fail "client-final mismatch:\n  got  #{proof.client_final}\n  want #{expected}"
-    end
+    assert proof.client_final == expected
   end
 
-  @test "computes the RFC 7677 server signature"
-  fn test_rfc_server_signature ! String
-    proof =
-      match Scram.proof("pencil", "user", RFC_CLIENT_NONCE, RFC_SERVER_FIRST)
-        Result.Ok(p) -> p
-        Result.Err(e) -> fail e
-      end
+  test "computes the RFC 7677 server signature"
+    proof = try Test.require(
+      Scram.proof("pencil", "user", RFC_CLIENT_NONCE, RFC_SERVER_FIRST),
+    )
 
     expected = "6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4="
 
-    if proof.server_signature != expected
-      fail "server signature mismatch: got #{proof.server_signature}"
-    end
-
-    match Scram.verify_server_final("v=" <> expected, proof.server_signature)
-      Result.Ok(_) -> ()
-      Result.Err(e) -> fail e
-    end
+    assert proof.server_signature == expected
+    assert Scram.verify_server_final("v=" <> expected, proof.server_signature)
+      .ok?()
   end
 
-  @test "rejects a wrong server signature"
-  fn test_verify_rejects_bad_signature ! String
-    match Scram.verify_server_final("v=AAAA", "BBBB")
-      Result.Ok(_) -> fail "expected verification to fail"
-      Result.Err(_) -> ()
-    end
+  test "rejects a wrong server signature"
+    assert Scram.verify_server_final("v=AAAA", "BBBB").err?()
   end
 
-  @test "rejects a server nonce that drops the client nonce"
-  fn test_rejects_foreign_nonce ! String
+  test "rejects a server nonce that drops the client nonce"
     tampered = "r=stolen-nonce,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096"
 
-    match Scram.proof("pencil", "user", RFC_CLIENT_NONCE, tampered)
-      Result.Ok(_) -> fail "expected foreign nonce to be rejected"
-      Result.Err(_) -> ()
-    end
+    assert Scram.proof("pencil", "user", RFC_CLIENT_NONCE, tampered).err?()
   end
 
-  @test "rejects malformed server-first messages"
-  fn test_rejects_malformed_server_first ! String
-    match Scram.proof("pencil", "user", RFC_CLIENT_NONCE, "garbage")
-      Result.Ok(_) -> fail "expected garbage to be rejected"
-      Result.Err(_) -> ()
-    end
+  test "rejects malformed server-first messages"
+    assert Scram.proof("pencil", "user", RFC_CLIENT_NONCE, "garbage").err?()
 
     missing_iterations = "r=rOprNGfwEbeRWgbNEkqOabc,s=W22ZaJ0SNY7soEsUEjb6gQ=="
 
-    match Scram.proof("pencil", "user", RFC_CLIENT_NONCE, missing_iterations)
-      Result.Ok(_) -> fail "expected missing iterations to be rejected"
-      Result.Err(_) -> ()
-    end
+    assert Scram.proof("pencil", "user", RFC_CLIENT_NONCE, missing_iterations)
+      .err?()
   end
 
-  @test "generated nonces are printable and distinct"
-  fn test_generate_nonce ! String
+  test "generated nonces are printable and distinct"
     a = Scram.generate_nonce()
     b = Scram.generate_nonce()
 
-    if a.length() != 24
-      fail "expected 24-char nonce, got #{a.length()}"
-    end
-
-    if a == b
-      fail "two nonces were identical"
-    end
+    assert a.length() == 24
+    assert a != b
   end
 end
