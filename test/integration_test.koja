@@ -7,15 +7,14 @@ priv const TEST_HOST: String = "127.0.0.1"
 priv const TEST_PORT: Int = 5434
 
 alias Test.Failure
-alias Test.require
 
 test "connects with trust auth and runs SELECT"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   (conn, outcome) = conn.query("SELECT 1 AS one, 'two' AS two")
   _ = conn.close()
 
-  result = try require(outcome)
+  result = try unwrap(outcome)
 
   assert result.tag == "SELECT 1"
   assert result.fields.length() == 2
@@ -24,23 +23,23 @@ test "connects with trust auth and runs SELECT"
 end
 
 test "returns NULL columns as None"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   (conn, outcome) = conn.query("SELECT NULL AS nothing")
   _ = conn.close()
 
-  result = try require(outcome)
+  result = try unwrap(outcome)
 
   assert cell(result, 0, 0) == Value.Null
 end
 
 test "decodes bool, int, float, text, and NULL to typed values"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   (conn, outcome) = conn.query("SELECT true, 42, 1.5::float8, 'hi', NULL")
   _ = conn.close()
 
-  result = try require(outcome)
+  result = try unwrap(outcome)
 
   expected: List<Value> = [
     Value.Bool(true), Value.Int(42), Value.Float(1.5), Value.String("hi"),
@@ -56,7 +55,7 @@ test "decodes bool, int, float, text, and NULL to typed values"
 end
 
 test "runs DDL and DML with the right command tags"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   (conn, created) = conn.query(
     "CREATE TEMP TABLE driver_test (id INT, label TEXT)",
@@ -71,7 +70,7 @@ test "runs DDL and DML with the right command tags"
   (conn, selected) = conn.query("SELECT label FROM driver_test ORDER BY id")
   _ = conn.close()
 
-  result = try require(selected)
+  result = try unwrap(selected)
 
   assert result.rows.length() == 2
   assert cell(result, 0, 0) == Value.String("seven")
@@ -79,7 +78,7 @@ test "runs DDL and DML with the right command tags"
 end
 
 test "surfaces server errors with severity and SQLSTATE"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   (conn, outcome) = conn.query("SELEC 1")
   _ = conn.close()
@@ -145,7 +144,7 @@ test "fails clearly when a password is needed but missing"
 end
 
 test "executes a typed parameterized SELECT without casts"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   # Declared parameter OIDs type $1 and $2 as int8, so the SQL
   # needs no ::int casts.
@@ -153,14 +152,14 @@ test "executes a typed parameterized SELECT without casts"
   (conn, outcome) = conn.execute("SELECT $1 + $2 AS total", params)
   _ = conn.close()
 
-  result = try require(outcome)
+  result = try unwrap(outcome)
 
   assert result.tag == "SELECT 1"
   assert cell(result, 0, 0) == Value.Int(42)
 end
 
 test "executes DML with NULL parameters and reads them back"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   (conn, created) = conn.execute(
     "CREATE TEMP TABLE exec_test (id INT, label TEXT)",
@@ -181,14 +180,14 @@ test "executes DML with NULL parameters and reads them back"
   )
   _ = conn.close()
 
-  result = try require(selected)
+  result = try unwrap(selected)
 
   assert result.rows.length() == 1
   assert cell(result, 0, 0) == Value.Null
 end
 
 test "surfaces server errors from execute"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   (conn, outcome) = conn.execute("SELECT * FROM missing_table")
   _ = conn.close()
@@ -202,22 +201,22 @@ test "surfaces server errors from execute"
 end
 
 test "execute reuses a cached prepared statement"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   first_params = [Value.int(1)]
   (conn, first) = conn.execute("SELECT $1 AS n", first_params)
-  try require(first)
+  try unwrap(first)
 
   second_params = [Value.int(2)]
   (conn, second) = conn.execute("SELECT $1 AS n", second_params)
-  result = try require(second)
+  result = try unwrap(second)
 
   assert cell(result, 0, 0) == Value.Int(2), "from the cached statement"
 
   (conn, names) = prepared_names(conn)
   _ = conn.close()
 
-  listed = try require(names)
+  listed = try unwrap(names)
 
   assert listed.rows.length() == 1
   assert cell(listed, 0, 0) == Value.String("koja_s1")
@@ -227,18 +226,18 @@ test "the cache evicts the least recently used statement"
   config = Config.new(TEST_HOST, TEST_PORT, "koja_trust", TEST_DATABASE)
     .with_statement_cache_size(1)
 
-  conn = try require(connect_config(config))
+  conn = try connect_config(config)
 
   (conn, first) = conn.execute("SELECT 1 AS a")
-  try require(first)
+  try unwrap(first)
 
   (conn, second) = conn.execute("SELECT 2 AS b")
-  try require(second)
+  try unwrap(second)
 
   (conn, names) = prepared_names(conn)
   _ = conn.close()
 
-  listed = try require(names)
+  listed = try unwrap(names)
 
   assert listed.rows.length() == 1, "the first statement should be closed"
   assert cell(listed, 0, 0) == Value.String("koja_s2")
@@ -248,24 +247,24 @@ test "a zero cache size prepares nothing"
   config = Config.new(TEST_HOST, TEST_PORT, "koja_trust", TEST_DATABASE)
     .with_statement_cache_size(0)
 
-  conn = try require(connect_config(config))
+  conn = try connect_config(config)
 
   params = [Value.int(7)]
   (conn, outcome) = conn.execute("SELECT $1 AS n", params)
-  result = try require(outcome)
+  result = try unwrap(outcome)
 
   assert cell(result, 0, 0) == Value.Int(7), "from the uncached statement"
 
   (conn, names) = prepared_names(conn)
   _ = conn.close()
 
-  listed = try require(names)
+  listed = try unwrap(names)
 
   assert listed.rows.length() == 0
 end
 
 test "a schema change under a cached statement re-prepares"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   setup = [
     "DROP TABLE IF EXISTS stale_plan_probe",
@@ -276,52 +275,52 @@ test "a schema change under a cached statement re-prepares"
   for sql in setup
     (next, outcome) = conn.query(sql)
     conn = next
-    try require(outcome)
+    try unwrap(outcome)
   end
 
   (conn, first) = conn.execute("SELECT * FROM stale_plan_probe")
-  try require(first)
+  try unwrap(first)
 
   # Adding a column changes the result shape of `SELECT *`, which
   # invalidates the cached plan (SQLSTATE 0A000) on the next run.
   (conn, altered) = conn.query("ALTER TABLE stale_plan_probe ADD COLUMN b int")
-  try require(altered)
+  try unwrap(altered)
 
   (conn, second) = conn.execute("SELECT * FROM stale_plan_probe")
   (conn, _) = conn.query("DROP TABLE stale_plan_probe")
   _ = conn.close()
 
-  result = try require(second)
+  result = try unwrap(second)
 
   assert result.fields.length() == 2, "after re-prepare"
 end
 
 test "a deallocated statement re-prepares"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   first_params = [Value.int(1)]
   (conn, first) = conn.execute("SELECT $1 AS n", first_params)
-  try require(first)
+  try unwrap(first)
 
   # DEALLOCATE ALL drops every prepared statement server-side, like
   # a pooler running DISCARD ALL between checkouts.
   (conn, dropped) = conn.query("DEALLOCATE ALL")
-  try require(dropped)
+  try unwrap(dropped)
 
   second_params = [Value.int(9)]
   (conn, second) = conn.execute("SELECT $1 AS n", second_params)
   (conn, names) = prepared_names(conn)
   _ = conn.close()
 
-  result = try require(second)
+  result = try unwrap(second)
   assert cell(result, 0, 0) == Value.Int(9), "from the re-prepared statement"
 
-  listed = try require(names)
+  listed = try unwrap(names)
   assert listed.rows.length() == 1
 end
 
 test "a server error keeps the connection open"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   (conn, outcome) = conn.query("SELECT 1/0")
 
@@ -338,13 +337,13 @@ test "a server error keeps the connection open"
   (conn, outcome) = conn.query("SELECT 1")
   _ = conn.close()
 
-  result = try require(outcome)
+  result = try unwrap(outcome)
 
   assert cell(result, 0, 0) == Value.Int(1), "from the follow-up query"
 end
 
 test "a server terminate closes the connection and later calls fail fast"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   (conn, outcome) = conn.query("SELECT pg_terminate_backend(pg_backend_pid())")
   try expect_closed(outcome, "terminate")
@@ -363,7 +362,7 @@ test "a server terminate closes the connection and later calls fail fast"
 end
 
 test "transaction status follows the session"
-  conn = try require(connect_trust())
+  conn = try connect_trust()
 
   assert conn.idle?(), "expected idle after connect"
 
@@ -396,29 +395,36 @@ priv fn expect_closed(outcome: Result<QueryResult, Error>, context: String)
 end
 
 priv fn connect_and_select_user(config: Config, want_user: String) ! Failure
-  conn = try Test.require(connect_config(config))
+  conn = try connect_config(config)
 
   (conn, outcome) = conn.query("SELECT current_user")
   _ = conn.close()
 
-  result = try Test.require(outcome)
+  result = try unwrap(outcome)
 
-  if cell(result, 0, 0) != Value.String(want_user)
-    fail "expected current_user `#{want_user}`"
+  assert cell(result, 0, 0) == Value.String(want_user)
+end
+
+priv fn connect_trust -> Connection ! Failure
+  try connect_config(
+    Config.new(TEST_HOST, TEST_PORT, "koja_trust", TEST_DATABASE),
+  )
+end
+
+priv fn connect_config(config: Config) -> Connection ! Failure
+  match Connection.connect(config)
+    Result.Ok(conn) -> conn
+    Result.Err(e) ->
+      fail "connect failed (is docker compose up?): #{e.message()}"
   end
 end
 
-priv fn connect_trust -> Result<Connection, String>
-  connect_config(Config.new(TEST_HOST, TEST_PORT, "koja_trust", TEST_DATABASE))
-end
-
-priv fn connect_config(config: Config) -> Result<Connection, String>
-  match Connection.connect(config)
-    Result.Ok(conn) ->
-      Result.Ok(conn)
-
-    Result.Err(e) ->
-      Result.Err("connect failed (is docker compose up?): #{e.message()}")
+# Unwraps a driver outcome, failing with the error's message instead
+# of its `Debug` rendering.
+priv fn unwrap<T>(outcome: Result<T, Error>) -> T ! Failure
+  match outcome
+    Result.Ok(value) -> value
+    Result.Err(e) -> fail "#{e.message()}"
   end
 end
 
@@ -439,22 +445,12 @@ end
 # The statement names the server currently holds, for cache
 # assertions. Uses the simple protocol, which the cache ignores.
 priv fn prepared_names(conn: Connection)
-  -> (Connection, Result<QueryResult, String>)
+  -> (Connection, Result<QueryResult, Error>)
 
-  (conn, outcome) = conn.query(
-    "SELECT name FROM pg_prepared_statements ORDER BY name",
-  )
-
-  match outcome
-    Result.Ok(result) -> (conn, Result.Ok(result))
-    Result.Err(e) -> (conn, Result.Err(e.message()))
-  end
+  conn.query("SELECT name FROM pg_prepared_statements ORDER BY name")
 end
 
 priv fn expect_tag(outcome: Result<QueryResult, Error>, want: String) ! Failure
-  result = try Test.require(outcome)
-
-  if result.tag != want
-    fail "expected tag `#{want}`, got `#{result.tag}`"
-  end
+  result = try unwrap(outcome)
+  assert result.tag == want
 end

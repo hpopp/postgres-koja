@@ -21,11 +21,8 @@ test "as_* accessors read the matching variant and reject others"
   assert Value.Float(1.5).as_float() == Option.Some(1.5)
   assert Value.String("x").as_string() == Option.Some("x")
 
-  no_int: Option<Int> = Option.None
-  no_string: Option<String> = Option.None
-
-  assert Value.String("7").as_int() == no_int
-  assert Value.Null.as_string() == no_string
+  assert Value.String("7").as_int().none?()
+  assert Value.Null.as_string().none?()
 end
 
 test "*_or accessors fall back on other variants"

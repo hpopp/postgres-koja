@@ -1,4 +1,5 @@
 alias Test.Failure
+alias Test.require
 
 test "encode_startup frames the protocol version and parameters"
   encoded = Message.encode_startup("alice", "appdb")
@@ -94,11 +95,9 @@ test "decode reads text and NULL columns from DataRow"
 
   match Message.decode(frame(68, body))
     Backend.DataRow(columns) ->
-      null_column: Option<String> = Option.None
-
       assert columns.length() == 2
       assert columns.get(0) == Option.Some(Option.Some("hello"))
-      assert columns.get(1) == Option.Some(null_column)
+      assert columns.get(1).unwrap().none?(), "expected second column to be NULL"
 
     _ ->
       fail "expected Backend.DataRow"
@@ -116,10 +115,14 @@ test "encode_parse frames the unnamed statement with no types"
 
       # Body: empty statement name, the SQL text, then zero
       # pre-declared parameter types.
-      (name, rest) = try take_cstring(body, "statement name")
+      (name, rest) = try require(
+        Wire.take_cstring(body).or_err("missing statement name"),
+      )
       assert name == ""
 
-      (sql, rest) = try take_cstring(rest, "SQL text")
+      (sql, rest) = try require(
+        Wire.take_cstring(rest).or_err("missing SQL text"),
+      )
       assert sql == "SELECT $1"
       assert rest == <<0::16>>
 
@@ -134,10 +137,14 @@ test "encode_parse declares a name and parameter type OIDs"
 
   match encoded
     <<0x50, _len::32, body: Binary>> ->
-      (name, rest) = try take_cstring(body, "statement name")
+      (name, rest) = try require(
+        Wire.take_cstring(body).or_err("missing statement name"),
+      )
       assert name == "s1"
 
-      (_, rest) = try take_cstring(rest, "SQL text")
+      (_, rest) = try require(
+        Wire.take_cstring(rest).or_err("missing SQL text"),
+      )
       assert rest == <<2::16, 20::32, 16::32>>
 
     _ ->
@@ -218,15 +225,6 @@ priv fn field_metadata(type_oid: Int) -> Binary
   <<0::32, 0::16, type_oid::32, 0::16, 0::32, 0::16>>
 end
 
-# Splits one NUL-terminated string off `data`, failing with `what`
-# when there is none.
-priv fn take_cstring(data: Binary, what: String) -> (String, Binary) ! Failure
-  match Wire.take_cstring(data)
-    Option.Some(pair) -> pair
-    Option.None -> fail "missing #{what}"
-  end
-end
-
 # Checks that `data` is exactly `expected` as NUL-terminated strings
 # from `index` on, followed by the final terminator.
 priv fn check_cstrings(data: Binary, expected: List<String>, index: Int)
@@ -234,30 +232,21 @@ priv fn check_cstrings(data: Binary, expected: List<String>, index: Int)
 
   match expected.get(index)
     Option.None ->
-      if data != <<0>>
-        fail "startup params missing final terminator"
-      end
+      assert data == <<0>>, "startup params missing final terminator"
 
     Option.Some(want) ->
-      (actual, rest) = try take_cstring(data, "`#{want}`")
-
-      if actual != want
-        fail "expected `#{want}`, got `#{actual}`"
-      end
-
+      (actual, rest) = try require(
+        Wire.take_cstring(data).or_err("startup params ended before `#{want}`"),
+      )
+      assert actual == want
       try check_cstrings(rest, expected, index + 1)
   end
 end
 
 priv fn expect_status(byte: Int, want: TransactionStatus) ! Failure
   match Message.decode(frame(90, <<byte::8>>))
-    Backend.ReadyForQuery(got) ->
-      if got != want
-        fail "status byte #{byte} decoded to #{got.format()}, want #{want.format()}"
-      end
-
-    _ ->
-      fail "expected Backend.ReadyForQuery for byte #{byte}"
+    Backend.ReadyForQuery(got) -> assert got == want, "status byte #{byte}"
+    _ -> fail "expected Backend.ReadyForQuery for byte #{byte}"
   end
 end
 
@@ -266,13 +255,8 @@ priv fn expect_field(actual: Option<Field>, want: String, want_oid: Int)
 
   match actual
     Option.Some(field) ->
-      if field.name != want
-        fail "expected `#{want}`, got `#{field.name}`"
-      end
-
-      if field.type_oid != want_oid
-        fail "expected OID #{want_oid} for `#{want}`, got #{field.type_oid}"
-      end
+      assert field.name == want
+      assert field.type_oid == want_oid, "OID for `#{want}`"
 
     Option.None ->
       fail "expected `#{want}`, got None"
