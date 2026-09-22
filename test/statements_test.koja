@@ -1,93 +1,58 @@
-struct StatementsTest
-  @test "a zero limit disables the cache"
-  fn test_disabled ! String
-    not StatementCache.new(0).enabled?()
-  end
+test "a zero limit disables the cache"
+  assert not StatementCache.new(0).enabled?()
+end
 
-  @test "the key covers SQL text and parameter OIDs"
-  fn test_key ! String
-    with_params = StatementCache.key("SELECT $1", [23, 25])
+test "the key covers SQL text and parameter OIDs"
+  assert StatementCache.key("SELECT $1", [23, 25]) == "SELECT $1|23|25"
 
-    if with_params != "SELECT $1|23|25"
-      fail "got `#{with_params}`"
-    end
+  no_params: List<Int> = List.new()
 
-    no_params: List<Int> = List.new()
+  assert StatementCache.key("SELECT 1", no_params) == "SELECT 1"
+end
 
-    if StatementCache.key("SELECT 1", no_params) != "SELECT 1"
-      fail "expected the bare SQL as the key"
-    end
-  end
+test "hit misses on an empty cache and finds a stored name"
+  cache = StatementCache.new(4)
+  (cache, missed) = cache.hit("k")
 
-  @test "hit misses on an empty cache and finds a stored name"
-  fn test_hit_and_store ! String
-    cache = StatementCache.new(4)
-    (cache, missed) = cache.hit("k")
+  assert missed == Option.None
 
-    match missed
-      Option.Some(name) -> fail "expected a miss, got `#{name}`"
-      Option.None -> ()
-    end
+  cache = cache.store("k", "koja_s1")
+  (_, found) = cache.hit("k")
 
-    cache = cache.store("k", "koja_s1")
-    (_, found) = cache.hit("k")
+  assert found == Option.Some("koja_s1")
+end
 
-    match found
-      Option.Some("koja_s1") -> ()
-      Option.Some(name) -> fail "expected koja_s1, got `#{name}`"
-      Option.None -> fail "expected a hit after store"
-    end
-  end
+test "reserve claims sequential statement names"
+  cache = StatementCache.new(4)
+  (cache, first, _) = cache.reserve()
+  (_, second, _) = cache.reserve()
 
-  @test "reserve claims sequential statement names"
-  fn test_reserve_names ! String
-    cache = StatementCache.new(4)
-    (cache, first, _) = cache.reserve()
-    (_, second, _) = cache.reserve()
+  assert first == "koja_s1"
+  assert second == "koja_s2"
+end
 
-    if not (first == "koja_s1" and second == "koja_s2")
-      fail "got `#{first}` and `#{second}`"
-    end
-  end
+test "a full cache evicts the least recently used entry"
+  cache = StatementCache.new(2)
+  cache = cache.store("a", "koja_s1")
+  cache = cache.store("b", "koja_s2")
 
-  @test "a full cache evicts the least recently used entry"
-  fn test_lru_eviction ! String
-    cache = StatementCache.new(2)
-    cache = cache.store("a", "koja_s1")
-    cache = cache.store("b", "koja_s2")
+  # Touch `a` so `b` becomes the least recently used entry.
+  (cache, _) = cache.hit("a")
+  (cache, _, close_frame) = cache.reserve()
 
-    # Touch `a` so `b` becomes the least recently used entry.
-    (cache, _) = cache.hit("a")
-    (cache, _, close_frame) = cache.reserve()
+  assert close_frame == Message.encode_close("koja_s2")
 
-    if close_frame != Message.encode_close("koja_s2")
-      fail "expected a Close frame for the evicted koja_s2"
-    end
+  (cache, kept) = cache.hit("a")
+  assert kept.some?(), "expected `a` to survive eviction"
 
-    (cache, kept) = cache.hit("a")
+  (_, evicted) = cache.hit("b")
+  assert evicted.none?(), "expected `b` to be evicted"
+end
 
-    match kept
-      Option.Some(_) -> ()
-      Option.None -> fail "expected `a` to survive eviction"
-    end
+test "remove drops an entry"
+  cache = StatementCache.new(4)
+  cache = cache.store("k", "koja_s1")
+  (_, found) = cache.remove("k").hit("k")
 
-    (_, evicted) = cache.hit("b")
-
-    match evicted
-      Option.None -> ()
-      Option.Some(_) -> fail "expected `b` to be evicted"
-    end
-  end
-
-  @test "remove drops an entry"
-  fn test_remove ! String
-    cache = StatementCache.new(4)
-    cache = cache.store("k", "koja_s1")
-    (_, found) = cache.remove("k").hit("k")
-
-    match found
-      Option.None -> ()
-      Option.Some(_) -> fail "expected the entry to be gone"
-    end
-  end
+  assert found.none?()
 end

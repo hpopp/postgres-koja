@@ -1,169 +1,93 @@
-struct ValueTest
-  @test "opt_* constructors wrap Some and map None to Null"
-  fn test_opt_constructors ! String
-    cases: List<(Value, Value)> = [
-      (Value.opt_bool(Option.Some(true)), Value.Bool(true)),
-      (Value.opt_int(Option.Some(7)), Value.Int(7)),
-      (Value.opt_float(Option.Some(1.5)), Value.Float(1.5)),
-      (Value.opt_string(Option.Some("x")), Value.String("x")),
-      (Value.opt_bool(Option.None), Value.Null),
-      (Value.opt_int(Option.None), Value.Null),
-      (Value.opt_float(Option.None), Value.Null),
-      (Value.opt_string(Option.None), Value.Null)
-    ]
+test "opt_* constructors wrap Some and map None to Null"
+  cases: List<(Value, Value)> = [
+    (Value.opt_bool(Option.Some(true)), Value.Bool(true)),
+    (Value.opt_int(Option.Some(7)), Value.Int(7)),
+    (Value.opt_float(Option.Some(1.5)), Value.Float(1.5)),
+    (Value.opt_string(Option.Some("x")), Value.String("x")),
+    (Value.opt_bool(Option.None), Value.Null),
+    (Value.opt_int(Option.None), Value.Null),
+    (Value.opt_float(Option.None), Value.Null),
+    (Value.opt_string(Option.None), Value.Null)
+  ]
 
-    for pair in cases
-      (got, want) = pair
-
-      if got != want
-        fail "expected #{want.format()}, got #{got.format()}"
-      end
-    end
+  for (got, want) in cases
+    assert got == want
   end
+end
 
-  @test "as_* accessors read the matching variant and reject others"
-  fn test_as_accessors ! String
-    if Value.Int(7).as_int() != Option.Some(7)
-      fail "as_int on Int"
-    end
+test "as_* accessors read the matching variant and reject others"
+  assert Value.Int(7).as_int() == Option.Some(7)
+  assert Value.Bool(true).as_bool() == Option.Some(true)
+  assert Value.Float(1.5).as_float() == Option.Some(1.5)
+  assert Value.String("x").as_string() == Option.Some("x")
 
-    if Value.Bool(true).as_bool() != Option.Some(true)
-      fail "as_bool on Bool"
-    end
+  assert Value.String("7").as_int().none?()
+  assert Value.Null.as_string().none?()
+end
 
-    if Value.Float(1.5).as_float() != Option.Some(1.5)
-      fail "as_float on Float"
-    end
+test "*_or accessors fall back on other variants"
+  assert Value.Int(7).int_or(0) == 7
+  assert Value.Null.int_or(-1) == -1
+  assert Value.String("x").string_or("") == "x"
+  assert Value.Int(7).string_or("miss") == "miss"
+  assert Value.Bool(true).bool_or(false)
+  assert Value.Float(1.5).float_or(0.0) == 1.5
+end
 
-    if Value.String("x").as_string() != Option.Some("x")
-      fail "as_string on String"
-    end
+test "encode renders each variant in text wire format"
+  cases: List<(Value, Option<String>)> = [
+    (Value.Null, Option.None), (Value.Bool(true), Option.Some("t")),
+    (Value.Bool(false), Option.Some("f")), (Value.Int(42), Option.Some("42")),
+    (Value.Int(-7), Option.Some("-7")),
+    (Value.String("hello"), Option.Some("hello"))
+  ]
 
-    no_int: Option<Int> = Option.None
-    no_string: Option<String> = Option.None
-
-    if Value.String("7").as_int() != no_int
-      fail "as_int on String should miss"
-    end
-
-    if Value.Null.as_string() != no_string
-      fail "as_string on Null should miss"
-    end
+  for (value, want) in cases
+    assert value.encode() == want, "encoding #{value.format()}"
   end
+end
 
-  @test "*_or accessors fall back on other variants"
-  fn test_or_accessors ! String
-    if Value.Int(7).int_or(0) != 7
-      fail "int_or on Int"
-    end
+test "type_oid declares int8, bool, and float8, and 0 otherwise"
+  cases: List<(Value, Int)> = [
+    (Value.Null, 0), (Value.Bool(true), 16), (Value.Int(1), 20),
+    (Value.Float(1.5), 701), (Value.String("x"), 0)
+  ]
 
-    if Value.Null.int_or(-1) != -1
-      fail "int_or fallback"
-    end
-
-    if Value.String("x").string_or("") != "x"
-      fail "string_or on String"
-    end
-
-    if Value.Int(7).string_or("miss") != "miss"
-      fail "string_or fallback"
-    end
-
-    if not Value.Bool(true).bool_or(false)
-      fail "bool_or on Bool"
-    end
-
-    if Value.Float(1.5).float_or(0.0) != 1.5
-      fail "float_or on Float"
-    end
+  for (value, want) in cases
+    assert value.type_oid() == want, "OID for #{value.format()}"
   end
+end
 
-  @test "encode renders each variant in text wire format"
-  fn test_encode ! String
-    cases: List<(Value, Option<String>)> = [
-      (Value.Null, Option.None), (Value.Bool(true), Option.Some("t")),
-      (Value.Bool(false), Option.Some("f")), (Value.Int(42), Option.Some("42")),
-      (Value.Int(-7), Option.Some("-7")),
-      (Value.String("hello"), Option.Some("hello"))
-    ]
+test "decode maps known OIDs to typed variants"
+  cases: List<(Int, String, Value)> = [
+    (16, "t", Value.Bool(true)), (16, "f", Value.Bool(false)),
+    (20, "9000000000", Value.Int(9000000000)), (21, "7", Value.Int(7)),
+    (23, "-42", Value.Int(-42)), (701, "1.5", Value.Float(1.5)),
+    (25, "plain text", Value.String("plain text"))
+  ]
 
-    for pair in cases
-      (value, want) = pair
-
-      if value.encode() != want
-        fail "unexpected encoding for #{value.format()}"
-      end
-    end
+  for (oid, text, want) in cases
+    assert Value.decode(oid, Option.Some(text)) == want, "OID #{oid} `#{text}`"
   end
+end
 
-  @test "type_oid declares int8, bool, and float8, and 0 otherwise"
-  fn test_type_oid ! String
-    cases: List<(Value, Int)> = [
-      (Value.Null, 0), (Value.Bool(true), 16), (Value.Int(1), 20),
-      (Value.Float(1.5), 701), (Value.String("x"), 0)
-    ]
+test "decode returns Null for NULL columns"
+  no_column: Option<String> = Option.None
 
-    for pair in cases
-      (value, want) = pair
+  assert Value.decode(23, no_column) == Value.Null
+end
 
-      if value.type_oid() != want
-        fail "unexpected OID for #{value.format()}"
-      end
-    end
-  end
+test "decode passes unparseable and unknown values through as String"
+  cases: List<(Int, String)> = [
+    # numeric keeps arbitrary precision as text
+    (1700, "12345.6789"),
+    # a timestamp stays in the server's text format
+    (1114, "2026-08-27 19:00:00"),
+    # an int column that fails to parse falls back to text
+    (23, "not-a-number")
+  ]
 
-  @test "decode maps known OIDs to typed variants"
-  fn test_decode_typed ! String
-    cases: List<(Int, String, Value)> = [
-      (16, "t", Value.Bool(true)), (16, "f", Value.Bool(false)),
-      (20, "9000000000", Value.Int(9000000000)), (21, "7", Value.Int(7)),
-      (23, "-42", Value.Int(-42)), (701, "1.5", Value.Float(1.5)),
-      (25, "plain text", Value.String("plain text"))
-    ]
-
-    for triple in cases
-      (oid, text, want) = triple
-      got = Value.decode(oid, Option.Some(text))
-
-      if got != want
-        fail "OID #{oid} `#{text}` decoded to #{got.format()}"
-      end
-    end
-  end
-
-  @test "decode returns Null for NULL columns"
-  fn test_decode_null ! String
-    no_column: Option<String> = Option.None
-
-    match Value.decode(23, no_column)
-      Value.Null -> ()
-      other -> fail "expected Null, got #{other.format()}"
-    end
-  end
-
-  @test "decode passes unparseable and unknown values through as String"
-  fn test_decode_passthrough ! String
-    cases: List<(Int, String)> = [
-      # numeric keeps arbitrary precision as text
-      (1700, "12345.6789"),
-      # a timestamp stays in the server's text format
-      (1114, "2026-08-27 19:00:00"),
-      # an int column that fails to parse falls back to text
-      (23, "not-a-number")
-    ]
-
-    for pair in cases
-      (oid, text) = pair
-
-      match Value.decode(oid, Option.Some(text))
-        Value.String(got) ->
-          if got != text
-            fail "expected `#{text}`, got `#{got}`"
-          end
-
-        other ->
-          fail "OID #{oid} decoded to #{other.format()}"
-      end
-    end
+  for (oid, text) in cases
+    assert Value.decode(oid, Option.Some(text)) == Value.String(text), "OID #{oid}"
   end
 end

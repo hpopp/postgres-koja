@@ -1,437 +1,264 @@
-struct MessageTest
-  @test "encode_startup frames the protocol version and parameters"
-  fn test_encode_startup ! String
-    encoded = Message.encode_startup("alice", "appdb")
+alias Test.Failure
+alias Test.require
 
-    match encoded
-      <<len::32, version::32, rest: Binary>> ->
-        if len != encoded.byte_size()
-          fail "length prefix #{len} != #{encoded.byte_size()}"
-        end
+test "encode_startup frames the protocol version and parameters"
+  encoded = Message.encode_startup("alice", "appdb")
 
-        if version != 196608
-          fail "expected protocol 196608, got #{version}"
-        end
+  match encoded
+    <<len::32, version::32, rest: Binary>> ->
+      assert len == encoded.byte_size()
+      assert version == 196608
+      try check_cstrings(rest, ["user", "alice", "database", "appdb"], 0)
 
-        try MessageTest.check_startup_params(rest)
-
-      _ ->
-        fail "startup message shorter than its header"
-    end
+    _ ->
+      fail "startup message shorter than its header"
   end
+end
 
-  priv fn check_startup_params(params: Binary) ! String
-    expected = ["user", "alice", "database", "appdb"]
-    try MessageTest.check_cstrings(params, expected, 0)
+test "encode_query wraps the SQL in a Q frame"
+  encoded = Message.encode_query("SELECT 1")
+
+  match encoded
+    <<tag::8, len::32, payload: Binary>> ->
+      assert tag == 0x51
+      assert len == payload.byte_size() + 4
+
+      match Wire.take_cstring(payload)
+        Option.Some((sql, _)) -> assert sql == "SELECT 1"
+        Option.None -> fail "payload is not a NUL-terminated string"
+      end
+
+    _ ->
+      fail "query message shorter than its header"
   end
+end
 
-  priv fn check_cstrings(data: Binary, expected: List<String>, index: Int)
-    ! String
+test "TERMINATE is a bare X frame"
+  assert TERMINATE == <<0x58, 4::32>>
+end
 
-    match expected.get(index)
-      Option.None ->
-        if data != <<0>>
-          fail "startup params missing final terminator"
-        end
+test "decode recognizes ReadyForQuery"
+  assert Message.decode(frame(90, <<73::8>>)) ==
+    Backend.ReadyForQuery(TransactionStatus.Idle)
+end
 
-      Option.Some(want) ->
-        match Wire.take_cstring(data)
-          Option.Some((actual, rest)) ->
-            if actual != want
-              fail "expected `#{want}`, got `#{actual}`"
-            end
+test "decode reads the ReadyForQuery transaction status byte"
+  try expect_status(73, TransactionStatus.Idle)
+  try expect_status(84, TransactionStatus.InBlock)
+  try expect_status(69, TransactionStatus.Failed)
+  # An unknown byte reads as idle rather than wedging the connection.
+  try expect_status(63, TransactionStatus.Idle)
+end
 
-            try MessageTest.check_cstrings(rest, expected, index + 1)
+test "decode extracts the CommandComplete tag"
+  decoded = Message.decode(frame(67, cstring("INSERT 0 1")))
 
-          Option.None ->
-            fail "startup params ended before `#{want}`"
-        end
-    end
+  assert decoded == Backend.CommandComplete("INSERT 0 1")
+end
+
+test "decode collects severity, code, and message from ErrorResponse"
+  body = <<
+    83, cstring("ERROR"), 86, cstring("ERROR"), 67, cstring("42601"), 77,
+    cstring("syntax error at or near \"SELEC\""), 0
+  >>
+
+  match Message.decode(frame(69, body))
+    Backend.ErrorResponse(server_error) ->
+      assert server_error.severity == "ERROR"
+      assert server_error.code == "42601"
+      assert server_error.message == "syntax error at or near \"SELEC\""
+
+    _ ->
+      fail "expected Backend.ErrorResponse"
   end
+end
 
-  @test "encode_query wraps the SQL in a Q frame"
-  fn test_encode_query ! String
-    encoded = Message.encode_query("SELECT 1")
+test "decode reads column names and type OIDs from RowDescription"
+  body = <<
+    2::16, cstring("id"), field_metadata(23), cstring("name"),
+    field_metadata(25)
+  >>
 
-    match encoded
-      <<tag::8, len::32, payload: Binary>> ->
-        if tag != 0x51
-          fail "expected tag Q (0x51), got #{tag}"
-        end
+  match Message.decode(frame(84, body))
+    Backend.RowDescription(fields) ->
+      assert fields.length() == 2
+      try expect_field(fields.get(0), "id", 23)
+      try expect_field(fields.get(1), "name", 25)
 
-        if len != payload.byte_size() + 4
-          fail "length prefix #{len} != #{payload.byte_size() + 4}"
-        end
-
-        match Wire.take_cstring(payload)
-          Option.Some((sql, _)) ->
-            if sql != "SELECT 1"
-              fail "expected `SELECT 1`, got `#{sql}`"
-            end
-
-          Option.None ->
-            fail "payload is not a NUL-terminated string"
-        end
-
-      _ ->
-        fail "query message shorter than its header"
-    end
+    _ ->
+      fail "expected Backend.RowDescription"
   end
+end
 
-  @test "TERMINATE is a bare X frame"
-  fn test_terminate ! String
-    if TERMINATE != <<0x58, 4::32>>
-      fail "expected <<X, 4>> frame, got #{TERMINATE}"
-    end
+test "decode reads text and NULL columns from DataRow"
+  body = <<2::16, 5::32, "hello", 4294967295::32>>
+
+  match Message.decode(frame(68, body))
+    Backend.DataRow(columns) ->
+      assert columns.length() == 2
+      assert columns.get(0) == Option.Some(Option.Some("hello"))
+      assert columns.get(1).unwrap().none?(), "expected second column to be NULL"
+
+    _ ->
+      fail "expected Backend.DataRow"
   end
+end
 
-  @test "decode recognizes ReadyForQuery"
-  fn test_decode_ready_for_query ! String
-    frame = MessageTest.frame(90, <<73::8>>)
+test "encode_parse frames the unnamed statement with no types"
+  no_oids: List<Int> = []
+  encoded = Message.encode_parse("", "SELECT $1", no_oids)
 
-    match Message.decode(frame)
-      Backend.ReadyForQuery(_) -> ()
-      _ -> fail "expected Backend.ReadyForQuery"
-    end
+  match encoded
+    <<tag::8, len::32, body: Binary>> ->
+      assert tag == 0x50
+      assert len == body.byte_size() + 4
+
+      # Body: empty statement name, the SQL text, then zero
+      # pre-declared parameter types.
+      (name, rest) = try require(
+        Wire.take_cstring(body).or_err("missing statement name"),
+      )
+      assert name == ""
+
+      (sql, rest) = try require(
+        Wire.take_cstring(rest).or_err("missing SQL text"),
+      )
+      assert sql == "SELECT $1"
+      assert rest == <<0::16>>
+
+    _ ->
+      fail "parse message shorter than its header"
   end
+end
 
-  @test "decode reads the ReadyForQuery transaction status byte"
-  fn test_decode_ready_for_query_status ! String
-    try MessageTest.expect_status(73, TransactionStatus.Idle)
-    try MessageTest.expect_status(84, TransactionStatus.InBlock)
-    try MessageTest.expect_status(69, TransactionStatus.Failed)
-    # An unknown byte reads as idle rather than wedging the connection.
-    try MessageTest.expect_status(63, TransactionStatus.Idle)
+test "encode_parse declares a name and parameter type OIDs"
+  oids: List<Int> = [20, 16]
+  encoded = Message.encode_parse("s1", "SELECT $1, $2", oids)
+
+  match encoded
+    <<0x50, _len::32, body: Binary>> ->
+      (name, rest) = try require(
+        Wire.take_cstring(body).or_err("missing statement name"),
+      )
+      assert name == "s1"
+
+      (_, rest) = try require(
+        Wire.take_cstring(rest).or_err("missing SQL text"),
+      )
+      assert rest == <<2::16, 20::32, 16::32>>
+
+    _ ->
+      fail "parse message shorter than its header"
   end
+end
 
-  @test "decode extracts the CommandComplete tag"
-  fn test_decode_command_complete ! String
-    frame = MessageTest.frame(67, MessageTest.cstring("INSERT 0 1"))
+test "encode_bind carries text and NULL parameters"
+  params: List<Option<String>> = [Option.Some("42"), Option.None]
+  encoded = Message.encode_bind("", params)
 
-    match Message.decode(frame)
-      Backend.CommandComplete(tag) ->
-        if tag != "INSERT 0 1"
-          fail "expected `INSERT 0 1`, got `#{tag}`"
-        end
+  match encoded
+    <<tag::8, len::32, body: Binary>> ->
+      assert tag == 0x42
+      assert len == body.byte_size() + 4
 
-      _ ->
-        fail "expected Backend.CommandComplete"
-    end
+      # Body: portal "", statement "", 0 format codes, 2 params:
+      # int32 2 + "42", int32 -1 (NULL), then 0 result formats.
+      assert body ==
+        <<0, 0, 0::16, 2::16, 2::32, 52, 50, 4294967295::32, 0::16>>
+
+    _ ->
+      fail "bind message shorter than its header"
   end
+end
 
-  @test "decode collects severity, code, and message from ErrorResponse"
-  fn test_decode_error_response ! String
-    body = <<
-      83, MessageTest.cstring("ERROR"), 86, MessageTest.cstring("ERROR"), 67,
-      MessageTest.cstring("42601"), 77,
-      MessageTest.cstring("syntax error at or near \"SELEC\""), 0
-    >>
+test "encode_bind names the statement it binds"
+  no_params: List<Option<String>> = []
+  encoded = Message.encode_bind("s7", no_params)
 
-    match Message.decode(MessageTest.frame(69, body))
-      Backend.ErrorResponse(server_error) ->
-        if server_error.severity != "ERROR"
-          fail "expected severity ERROR, got #{server_error.severity}"
-        end
+  match encoded
+    <<0x42, _len::32, body: Binary>> ->
+      # Body: portal "", statement "s7", 0 format codes, 0 params,
+      # 0 result formats.
+      assert body == <<0, 115, 55, 0, 0::16, 0::16, 0::16>>
 
-        if server_error.code != "42601"
-          fail "expected code 42601, got #{server_error.code}"
-        end
-
-        if server_error.message != "syntax error at or near \"SELEC\""
-          fail "unexpected message: #{server_error.message}"
-        end
-
-      _ ->
-        fail "expected Backend.ErrorResponse"
-    end
+    _ ->
+      fail "bind message shorter than its header"
   end
+end
 
-  @test "decode reads column names and type OIDs from RowDescription"
-  fn test_decode_row_description ! String
-    body = <<
-      2::16, MessageTest.cstring("id"), MessageTest.field_metadata(23),
-      MessageTest.cstring("name"), MessageTest.field_metadata(25)
-    >>
+test "encode_close frames a statement Close"
+  assert Message.encode_close("s3") == <<0x43, 8::32, 0x53, 115, 51, 0>>
+end
 
-    match Message.decode(MessageTest.frame(84, body))
-      Backend.RowDescription(fields) ->
-        if fields.length() != 2
-          fail "expected 2 fields, got #{fields.length()}"
-        end
+test "DESCRIBE_PORTAL, EXECUTE, and SYNC frame correctly"
+  assert DESCRIBE_PORTAL == <<0x44, 6::32, 0x50, 0>>
+  assert EXECUTE == <<0x45, 9::32, 0, 0::32>>
+  assert SYNC == <<0x53, 4::32>>
+end
 
-        try MessageTest.expect_field(fields.get(0), "id", 23)
+test "decode recognizes the extended-protocol responses"
+  assert Message.decode(frame(49, <<>>)) == Backend.ParseComplete
+  assert Message.decode(frame(50, <<>>)) == Backend.BindComplete
+  assert Message.decode(frame(73, <<>>)) == Backend.EmptyQueryResponse
+  assert Message.decode(frame(110, <<>>)) == Backend.NoData
+  assert Message.decode(frame(115, <<>>)) == Backend.PortalSuspended
+  assert Message.decode(frame(116, <<2::16, 0::32, 0::32>>)) ==
+    Backend.ParameterDescription
+end
 
-        try MessageTest.expect_field(fields.get(1), "name", 25)
+test "decode maps unknown tags to Other"
+  assert Message.decode(frame(33, <<>>)) == Backend.Other
+end
 
-      _ ->
-        fail "expected Backend.RowDescription"
-    end
+priv fn frame(tag: Int, body: Binary) -> Binary
+  <<tag, (body.byte_size() + 4)::32, body>>
+end
+
+priv fn cstring(s: String) -> Binary
+  <<s.to_binary(), 0>>
+end
+
+# The 18 bytes of per-field metadata (table oid, attribute number,
+# type oid, type size, type modifier, format code) that follow each
+# name in a RowDescription.
+priv fn field_metadata(type_oid: Int) -> Binary
+  <<0::32, 0::16, type_oid::32, 0::16, 0::32, 0::16>>
+end
+
+# Checks that `data` is exactly `expected` as NUL-terminated strings
+# from `index` on, followed by the final terminator.
+priv fn check_cstrings(data: Binary, expected: List<String>, index: Int)
+  ! Failure
+
+  match expected.get(index)
+    Option.None ->
+      assert data == <<0>>, "startup params missing final terminator"
+
+    Option.Some(want) ->
+      (actual, rest) = try require(
+        Wire.take_cstring(data).or_err("startup params ended before `#{want}`"),
+      )
+      assert actual == want
+      try check_cstrings(rest, expected, index + 1)
   end
+end
 
-  @test "decode reads text and NULL columns from DataRow"
-  fn test_decode_data_row ! String
-    body = <<2::16, 5::32, "hello", 4294967295::32>>
-
-    match Message.decode(MessageTest.frame(68, body))
-      Backend.DataRow(columns) ->
-        if columns.length() != 2
-          fail "expected 2 columns, got #{columns.length()}"
-        end
-
-        match columns.get(0)
-          Option.Some(Option.Some(text)) ->
-            if text != "hello"
-              fail "expected `hello`, got `#{text}`"
-            end
-
-          _ ->
-            fail "expected first column to be Some"
-        end
-
-        match columns.get(1)
-          Option.Some(Option.None) -> ()
-          _ -> fail "expected second column to be NULL"
-        end
-
-      _ ->
-        fail "expected Backend.DataRow"
-    end
+priv fn expect_status(byte: Int, want: TransactionStatus) ! Failure
+  match Message.decode(frame(90, <<byte::8>>))
+    Backend.ReadyForQuery(got) -> assert got == want, "status byte #{byte}"
+    _ -> fail "expected Backend.ReadyForQuery for byte #{byte}"
   end
+end
 
-  @test "encode_parse frames the unnamed statement with no types"
-  fn test_encode_parse ! String
-    no_oids: List<Int> = []
-    encoded = Message.encode_parse("", "SELECT $1", no_oids)
+priv fn expect_field(actual: Option<Field>, want: String, want_oid: Int)
+  ! Failure
 
-    match encoded
-      <<tag::8, len::32, body: Binary>> ->
-        if tag != 0x50
-          fail "expected tag P (0x50), got #{tag}"
-        end
+  match actual
+    Option.Some(field) ->
+      assert field.name == want
+      assert field.type_oid == want_oid, "OID for `#{want}`"
 
-        if len != body.byte_size() + 4
-          fail "length prefix #{len} != #{body.byte_size() + 4}"
-        end
-
-        # Body: empty statement name, the SQL text, then zero
-        # pre-declared parameter types.
-        (name, rest) =
-          match Wire.take_cstring(body)
-            Option.Some(p) -> p
-            Option.None -> fail "missing statement name"
-          end
-
-        if name != ""
-          fail "expected unnamed statement, got `#{name}`"
-        end
-
-        (sql, rest) =
-          match Wire.take_cstring(rest)
-            Option.Some(p) -> p
-            Option.None -> fail "missing SQL text"
-          end
-
-        if sql != "SELECT $1"
-          fail "expected `SELECT $1`, got `#{sql}`"
-        end
-
-        if rest != <<0::16>>
-          fail "expected zero parameter types, got #{rest}"
-        end
-
-      _ ->
-        fail "parse message shorter than its header"
-    end
-  end
-
-  @test "encode_parse declares a name and parameter type OIDs"
-  fn test_encode_parse_named ! String
-    oids: List<Int> = [20, 16]
-    encoded = Message.encode_parse("s1", "SELECT $1, $2", oids)
-
-    match encoded
-      <<0x50, _len::32, body: Binary>> ->
-        (name, rest) =
-          match Wire.take_cstring(body)
-            Option.Some(p) -> p
-            Option.None -> fail "missing statement name"
-          end
-
-        if name != "s1"
-          fail "expected statement `s1`, got `#{name}`"
-        end
-
-        (_, rest) =
-          match Wire.take_cstring(rest)
-            Option.Some(p) -> p
-            Option.None -> fail "missing SQL text"
-          end
-
-        if rest != <<2::16, 20::32, 16::32>>
-          fail "expected int8 and bool OIDs, got #{rest}"
-        end
-
-      _ ->
-        fail "parse message shorter than its header"
-    end
-  end
-
-  @test "encode_bind carries text and NULL parameters"
-  fn test_encode_bind ! String
-    params: List<Option<String>> = [Option.Some("42"), Option.None]
-    encoded = Message.encode_bind("", params)
-
-    match encoded
-      <<tag::8, len::32, body: Binary>> ->
-        if tag != 0x42
-          fail "expected tag B (0x42), got #{tag}"
-        end
-
-        if len != body.byte_size() + 4
-          fail "length prefix #{len} != #{body.byte_size() + 4}"
-        end
-
-        # Body: portal "", statement "", 0 format codes, 2 params:
-        # int32 2 + "42", int32 -1 (NULL), then 0 result formats.
-        expected = <<0, 0, 0::16, 2::16, 2::32, 52, 50, 4294967295::32, 0::16>>
-
-        if body != expected
-          fail "bind body #{body} != expected #{expected}"
-        end
-
-      _ ->
-        fail "bind message shorter than its header"
-    end
-  end
-
-  @test "encode_bind names the statement it binds"
-  fn test_encode_bind_named ! String
-    no_params: List<Option<String>> = []
-    encoded = Message.encode_bind("s7", no_params)
-
-    match encoded
-      <<0x42, _len::32, body: Binary>> ->
-        # Body: portal "", statement "s7", 0 format codes, 0 params,
-        # 0 result formats.
-        expected = <<0, 115, 55, 0, 0::16, 0::16, 0::16>>
-
-        if body != expected
-          fail "bind body #{body} != expected #{expected}"
-        end
-
-      _ ->
-        fail "bind message shorter than its header"
-    end
-  end
-
-  @test "encode_close frames a statement Close"
-  fn test_encode_close ! String
-    encoded = Message.encode_close("s3")
-    expected = <<0x43, 8::32, 0x53, 115, 51, 0>>
-
-    if encoded != expected
-      fail "close frame #{encoded} != expected #{expected}"
-    end
-  end
-
-  @test "DESCRIBE_PORTAL, EXECUTE, and SYNC frame correctly"
-  fn test_describe_execute_sync ! String
-    if DESCRIBE_PORTAL != <<0x44, 6::32, 0x50, 0>>
-      fail "unexpected Describe frame: #{DESCRIBE_PORTAL}"
-    end
-
-    if EXECUTE != <<0x45, 9::32, 0, 0::32>>
-      fail "unexpected Execute frame: #{EXECUTE}"
-    end
-
-    if SYNC != <<0x53, 4::32>>
-      fail "unexpected Sync frame: #{SYNC}"
-    end
-  end
-
-  @test "decode recognizes the extended-protocol responses"
-  fn test_decode_extended_responses ! String
-    match Message.decode(MessageTest.frame(49, <<>>))
-      Backend.ParseComplete -> ()
-      _ -> fail "expected Backend.ParseComplete for '1'"
-    end
-
-    match Message.decode(MessageTest.frame(50, <<>>))
-      Backend.BindComplete -> ()
-      _ -> fail "expected Backend.BindComplete for '2'"
-    end
-
-    match Message.decode(MessageTest.frame(73, <<>>))
-      Backend.EmptyQueryResponse -> ()
-      _ -> fail "expected Backend.EmptyQueryResponse for 'I'"
-    end
-
-    match Message.decode(MessageTest.frame(110, <<>>))
-      Backend.NoData -> ()
-      _ -> fail "expected Backend.NoData for 'n'"
-    end
-
-    match Message.decode(MessageTest.frame(115, <<>>))
-      Backend.PortalSuspended -> ()
-      _ -> fail "expected Backend.PortalSuspended for 's'"
-    end
-
-    match Message.decode(MessageTest.frame(116, <<2::16, 0::32, 0::32>>))
-      Backend.ParameterDescription -> ()
-      _ -> fail "expected Backend.ParameterDescription for 't'"
-    end
-  end
-
-  @test "decode maps unknown tags to Other"
-  fn test_decode_unknown ! String
-    match Message.decode(MessageTest.frame(33, <<>>))
-      Backend.Other -> ()
-      _ -> fail "expected Backend.Other"
-    end
-  end
-
-  priv fn frame(tag: Int, body: Binary) -> Binary
-    <<tag, (body.byte_size() + 4)::32, body>>
-  end
-
-  priv fn expect_status(byte: Int, want: TransactionStatus) ! String
-    match Message.decode(MessageTest.frame(90, <<byte::8>>))
-      Backend.ReadyForQuery(got) ->
-        if got != want
-          fail "status byte #{byte} decoded to #{got.format()}, want #{want.format()}"
-        end
-
-      _ ->
-        fail "expected Backend.ReadyForQuery for byte #{byte}"
-    end
-  end
-
-  priv fn cstring(s: String) -> Binary
-    <<s.to_binary(), 0>>
-  end
-
-  # The 18 bytes of per-field metadata (table oid, attribute number,
-  # type oid, type size, type modifier, format code) that follow each
-  # name in a RowDescription.
-  priv fn field_metadata(type_oid: Int) -> Binary
-    <<0::32, 0::16, type_oid::32, 0::16, 0::32, 0::16>>
-  end
-
-  priv fn expect_field(actual: Option<Field>, want: String, want_oid: Int)
-    ! String
-
-    match actual
-      Option.Some(field) ->
-        if field.name != want
-          fail "expected `#{want}`, got `#{field.name}`"
-        end
-
-        if field.type_oid != want_oid
-          fail "expected OID #{want_oid} for `#{want}`, got #{field.type_oid}"
-        end
-
-      Option.None ->
-        fail "expected `#{want}`, got None"
-    end
+    Option.None ->
+      fail "expected `#{want}`, got None"
   end
 end
