@@ -1,4 +1,4 @@
-alias Net.Socket.Error as SocketError
+alias IO.Error as IOError
 alias Net.TCPSocket
 alias Net.TLSError
 
@@ -6,8 +6,8 @@ alias Net.TLSError
 #
 # Postgres speaks a binary wire protocol whose length-prefix bytes
 # routinely land in the 0x80-0xFF range, so the driver stays in
-# `Binary` end to end. Reads go through `TCPSocket.read_binary` and
-# writes through `TCPSocket.write`, both on the I/O reactor. When the
+# `Binary` end to end. Reads go through `TCPSocket.read` and writes
+# through `TCPSocket.write`, both on the I/O reactor. When the
 # non-blocking socket would block, the calling process suspends
 # cooperatively until the fd is ready, then retries.
 priv struct Wire
@@ -98,7 +98,7 @@ priv struct Wire
       return buffer
     end
 
-    chunk = socket.read_binary(8192) rescue e -> fail Error.IO(net_message(e))
+    chunk = socket.read(8192) rescue e -> fail Error.IO(net_message(e))
 
     if chunk.byte_size() == 0
       fail Error.ConnectionClosed
@@ -121,9 +121,9 @@ priv struct Wire
     try write_from(socket, data, offset + written)
   end
 
-  priv fn net_message(e: SocketError | TLSError) -> String
+  priv fn net_message(e: IOError | TLSError) -> String
     match e
-      socket_error: SocketError -> socket_error.message()
+      io_error: IOError -> io_error.message()
       tls_error: TLSError -> tls_error.message()
     end
   end

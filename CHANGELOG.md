@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-10
+
+Requires Koja 0.20.
+
+### Changed
+
+- The driver reads the socket through `TCPSocket.read` and maps the Koja 0.20 `IO.Error` into `Error.IO`. No driver behavior changed.
+
 ## [0.4.0] - 2026-09-22
 
 Requires Koja 0.19.
