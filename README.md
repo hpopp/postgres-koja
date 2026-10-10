@@ -17,11 +17,12 @@ the v3 wire protocol over TCP, with no C dependencies beyond the Koja stdlib.
 
 ## Installation
 
-Add the package as a path dependency in your `koja.toml`:
+The package needs Koja 0.20 or newer. Add it to your `koja.toml`
+pinned to a release tag, then run `koja deps get`:
 
 ```toml
 [dependencies]
-Postgres = { path = "../postgres" }
+postgres = { github = "hpopp/postgres-koja", tag = "v0.5.0" }
 ```
 
 ## Usage
@@ -98,15 +99,15 @@ statement runs, so the retry cannot execute a statement twice.
 
 Every failure is a `Postgres.Error`:
 
-| Variant                        | Meaning                                                  |
-| ------------------------------ | -------------------------------------------------------- |
-| `ConnectFailed(String)`        | The TCP connection failed                                |
-| `AuthenticationFailed(String)` | Missing password, or a SCRAM proof or verification error |
-| `UnsupportedAuthentication`    | The server demands a method the driver lacks (MD5)       |
-| `Server(ServerError)`          | Server-reported error with SQLSTATE + severity           |
-| `Protocol(String)`             | Malformed or unexpected wire data                        |
-| `IO(String)`                   | Socket read/write failure                                |
-| `ConnectionClosed`             | Server closed the connection, or it was already closed   |
+| Variant                             | Meaning                                                   |
+| ----------------------------------- | --------------------------------------------------------- |
+| `ConnectFailed(String)`             | The TCP connection failed                                 |
+| `AuthenticationFailed(String)`      | Missing password, or a SCRAM proof or verification error  |
+| `UnsupportedAuthentication(String)` | The server demands a method the driver lacks, such as MD5 |
+| `Server(ServerError)`               | Server-reported error with SQLSTATE + severity            |
+| `Protocol(String)`                  | Malformed or unexpected wire data                         |
+| `IO(String)`                        | Socket read/write failure                                 |
+| `ConnectionClosed`                  | Server closed the connection, or it was already closed    |
 
 `error.message()` renders any variant as a human-readable string.
 
