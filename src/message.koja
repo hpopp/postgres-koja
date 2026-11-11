@@ -6,20 +6,6 @@
 # the message types it needs. Everything else decodes to
 # `Backend.Other`.
 
-# A Describe (`D`) frame for the unnamed portal (a `P` selector and
-# an empty portal name). It makes the server send RowDescription (or
-# NoData) before the rows.
-priv const DESCRIBE_PORTAL: Binary = <<0x44, 6::32, 0x50, 0>>
-# An Execute (`E`) frame that runs the unnamed portal (empty name)
-# with no row limit.
-priv const EXECUTE: Binary = <<0x45, 9::32, 0, 0::32>>
-priv const NULL_VALUE: Int = 4294967295
-priv const PROTOCOL_VERSION: Int = 196608
-# A Sync (`S`) frame that closes the extended-protocol cycle.
-priv const SYNC: Binary = <<0x53, 4::32>>
-# A Terminate (`X`) frame that announces a clean shutdown.
-priv const TERMINATE: Binary = <<0x58, 4::32>>
-
 priv enum Backend
   AuthenticationCleartextPassword
   AuthenticationOk
@@ -51,6 +37,27 @@ priv struct Field
 end
 
 priv struct Message
+  # The request codes an Authentication (`R`) message can carry.
+  priv const AUTH_CLEARTEXT_PASSWORD: Int = 3
+  priv const AUTH_MD5_PASSWORD: Int = 5
+  priv const AUTH_OK: Int = 0
+  priv const AUTH_SASL: Int = 10
+  priv const AUTH_SASL_CONTINUE: Int = 11
+  priv const AUTH_SASL_FINAL: Int = 12
+  # A Describe (`D`) frame for the unnamed portal (a `P` selector and
+  # an empty portal name). It makes the server send RowDescription (or
+  # NoData) before the rows.
+  priv const DESCRIBE_PORTAL: Binary = <<0x44, 6::32, 0x50, 0>>
+  # An Execute (`E`) frame that runs the unnamed portal (empty name)
+  # with no row limit.
+  priv const EXECUTE: Binary = <<0x45, 9::32, 0, 0::32>>
+  priv const NULL_VALUE: Int = 4294967295
+  priv const PROTOCOL_VERSION: Int = 196608
+  # A Sync (`S`) frame that closes the extended-protocol cycle.
+  priv const SYNC: Binary = <<0x53, 4::32>>
+  # A Terminate (`X`) frame that announces a clean shutdown.
+  priv const TERMINATE: Binary = <<0x58, 4::32>>
+
   # Builds a StartupMessage that announces the user and database. It
   # carries no leading type byte, only a length prefix.
   fn encode_startup(user: String, database: String) -> Binary
@@ -58,7 +65,7 @@ priv struct Message
       cstring("user"), cstring(user), cstring("database"), cstring(database), 0
     >>
 
-    body = <<PROTOCOL_VERSION::32, params>>
+    body = <<Message.PROTOCOL_VERSION::32, params>>
     <<(body.byte_size() + 4)::32, body>>
   end
 
@@ -144,7 +151,7 @@ priv struct Message
           out = <<out, bytes.byte_size()::32, bytes>>
 
         Option.None ->
-          out = <<out, NULL_VALUE::32>>
+          out = <<out, Message.NULL_VALUE::32>>
       end
     end
 
@@ -199,13 +206,24 @@ priv struct Message
   end
 
   priv fn auth_request(code: Int, rest: Binary) -> Backend
-    match code
-      0 -> Backend.AuthenticationOk
-      3 -> Backend.AuthenticationCleartextPassword
-      10 -> decode_sasl_mechanisms(rest)
-      11 -> sasl_payload(rest, true)
-      12 -> sasl_payload(rest, false)
-      _ -> Backend.AuthenticationOther(code)
+    cond
+      code == Message.AUTH_OK ->
+        Backend.AuthenticationOk
+
+      code == Message.AUTH_CLEARTEXT_PASSWORD ->
+        Backend.AuthenticationCleartextPassword
+
+      code == Message.AUTH_SASL ->
+        decode_sasl_mechanisms(rest)
+
+      code == Message.AUTH_SASL_CONTINUE ->
+        sasl_payload(rest, true)
+
+      code == Message.AUTH_SASL_FINAL ->
+        sasl_payload(rest, false)
+
+      else ->
+        Backend.AuthenticationOther(code)
     end
   end
 
@@ -360,7 +378,7 @@ priv struct Message
 
     match Wire.take_u32(body)
       Option.Some((length, rest)) ->
-        if length == NULL_VALUE
+        if length == Message.NULL_VALUE
           return read_columns(rest, remaining - 1, acc.append(Option.None))
         end
 

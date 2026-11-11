@@ -34,7 +34,7 @@ test "encode_query wraps the SQL in a Q frame"
 end
 
 test "TERMINATE is a bare X frame"
-  assert TERMINATE == <<0x58, 4::32>>
+  assert Message.TERMINATE == <<0x58, 4::32>>
 end
 
 test "decode recognizes ReadyForQuery"
@@ -191,9 +191,9 @@ test "encode_close frames a statement Close"
 end
 
 test "DESCRIBE_PORTAL, EXECUTE, and SYNC frame correctly"
-  assert DESCRIBE_PORTAL == <<0x44, 6::32, 0x50, 0>>
-  assert EXECUTE == <<0x45, 9::32, 0, 0::32>>
-  assert SYNC == <<0x53, 4::32>>
+  assert Message.DESCRIBE_PORTAL == <<0x44, 6::32, 0x50, 0>>
+  assert Message.EXECUTE == <<0x45, 9::32, 0, 0::32>>
+  assert Message.SYNC == <<0x53, 4::32>>
 end
 
 test "decode recognizes the extended-protocol responses"

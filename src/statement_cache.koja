@@ -1,19 +1,28 @@
-@doc """
-The per-connection prepared statement cache behind
-`Connection.execute`. Entries map a cache key (SQL text plus parameter
-type OIDs) to a server-side statement name, with least-recently-used
-eviction bounded by `limit`. Values are immutable: every operation
-returns the updated cache, and the connection rebinds it.
-"""
+# The per-connection prepared statement cache behind
+# `Connection.execute`. Public only because `Connection.cache` names
+# it. Not for callers to construct or change.
+#
+# Entries map a cache key, the SQL text plus the parameter type OIDs,
+# to a server-side statement name, with least-recently-used eviction
+# bounded by `limit`. Values are immutable. Every operation returns
+# the updated cache, and the connection rebinds it.
+@doc false
 struct StatementCache
   counter: Int
   entries: Map<String, (String, Int)>
   limit: Int
   tick: Int
 
+  # SQLSTATE `feature_not_supported`. The server sends it when a
+  # cached plan is invalid after a schema change.
+  priv const FEATURE_NOT_SUPPORTED: String = "0A000"
+  # SQLSTATE `invalid_sql_statement_name`. The statement no longer
+  # exists on the server, for example after a pooler ran DISCARD ALL.
+  priv const INVALID_SQL_STATEMENT_NAME: String = "26000"
+
   @doc """
-  Builds an empty cache holding at most `limit` statements. A limit of
-  0 disables caching.
+  Build an empty cache that holds at most `limit` statements. A limit
+  of 0 turns the cache off.
   """
   fn new(limit: Int) -> StatementCache
     entries: Map<String, (String, Int)> = Map.new()
@@ -21,14 +30,14 @@ struct StatementCache
   end
 
   @doc """
-  True when the cache stores statements at all.
+  Report whether the cache stores statements.
   """
   fn enabled?(self) -> Bool
     self.limit > 0
   end
 
   @doc """
-  The cache key for a statement, covering the SQL text and the
+  Build the cache key for a statement from the SQL text and the
   declared parameter type OIDs. The same SQL with different parameter
   types is a different server-side statement.
   """
@@ -43,8 +52,8 @@ struct StatementCache
   end
 
   @doc """
-  Looks up the statement name for `key` and marks it just used.
-  Returns the updated cache and the name, or `None` on a miss.
+  Look up the statement name for `key` and mark it just used.
+  Return the updated cache and the name, or `None` on a miss.
   """
   fn hit(self, key: String) -> (StatementCache, Option<String>)
     match self.entries.get(key)
@@ -59,10 +68,11 @@ struct StatementCache
   end
 
   @doc """
-  Claims a fresh statement name, evicting the least recently used
-  entry when the cache is full. Returns the updated cache, the name,
-  and a Close frame for the evicted statement (empty when nothing was
-  evicted). Record the name with `store` once the statement parses.
+  Claim a fresh statement name. When the cache is full, evict the
+  least recently used entry first. Return the updated cache, the
+  name, and a Close frame for the evicted statement. The frame is
+  empty when nothing was evicted. Record the name with `store` once
+  the statement parses.
   """
   fn reserve(self) -> (StatementCache, String, Binary)
     (cache, close_frame) = self.evict_if_full()
@@ -71,7 +81,7 @@ struct StatementCache
   end
 
   @doc """
-  Records `name` as the prepared statement for `key` and marks it just
+  Record `name` as the prepared statement for `key` and mark it just
   used.
   """
   fn store(self, key: String, name: String) -> StatementCache
@@ -79,7 +89,7 @@ struct StatementCache
   end
 
   @doc """
-  Drops the entry for `key`, if any.
+  Remove the entry for `key`, if one exists.
   """
   fn remove(self, key: String) -> StatementCache
     self.entries = self.entries.remove(key)
@@ -122,13 +132,13 @@ struct StatementCache
 end
 
 # True when the server reports a cached statement is unusable. The
-# cached plan is invalid after a schema change (SQLSTATE 0A000), or
-# the statement no longer exists on the server (26000, e.g. after a
-# pooler ran DISCARD ALL).
+# cached plan is invalid after a schema change, or the statement no
+# longer exists on the server.
 priv fn stale_statement?(error: Error) -> Bool
   match error
     Error.Server(server_error) ->
-      server_error.code == "0A000" or server_error.code == "26000"
+      server_error.code == StatementCache.FEATURE_NOT_SUPPORTED
+        or server_error.code == StatementCache.INVALID_SQL_STATEMENT_NAME
 
     _ ->
       false

@@ -22,7 +22,7 @@ enum Error
   UnsupportedAuthentication(String)
 
   @doc """
-  Returns a human-readable description of the error.
+  Return a human-readable description of the error.
   """
   fn message(self) -> String
     match self

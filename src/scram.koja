@@ -10,25 +10,25 @@ alias Crypto.SHA256
 # can drive them in unit tests. The connection layer supplies a
 # random nonce.
 
-# base64("n,,"), the channel-binding attribute of the client-final
-# message.
-priv const SCRAM_GS2_B64: String = "biws"
-
 # The client proof and expected server signature derived from one
 # SCRAM exchange.
-priv struct ScramProof
+priv struct SCRAM.Proof
   client_final: String
   server_signature: String
 end
 
 # The parsed attributes of a server-first-message.
-priv struct ServerFirst
+priv struct SCRAM.ServerFirst
   iterations: Int
   nonce: String
   salt: Binary
 end
 
-priv struct Scram
+priv struct SCRAM
+  # base64("n,,"), the channel-binding attribute of the client-final
+  # message.
+  priv const GS2_B64: String = "biws"
+
   fn generate_nonce -> String
     Base.encode64(Random.bytes(18))
   end
@@ -52,7 +52,7 @@ priv struct Scram
     username: String,
     client_nonce: String,
     server_first: String,
-  ) -> ScramProof ! String
+  ) -> SCRAM.Proof ! String
 
     parsed = try parse_server_first(server_first)
 
@@ -64,7 +64,7 @@ priv struct Scram
     client_key = HMAC.sha256(salted, "Client Key".to_binary())
     stored_key = SHA256.digest(client_key)
 
-    without_proof = "c=" <> SCRAM_GS2_B64 <> ",r=" <> parsed.nonce
+    without_proof = "c=" <> SCRAM.GS2_B64 <> ",r=" <> parsed.nonce
     auth_message = first_bare(username, client_nonce) <> "," <> server_first <>
       "," <> without_proof
 
@@ -74,7 +74,7 @@ priv struct Scram
     server_key = HMAC.sha256(salted, "Server Key".to_binary())
     server_signature = HMAC.sha256(server_key, auth_message.to_binary())
 
-    ScramProof{
+    SCRAM.Proof{
       client_final: without_proof <> ",p=" <> Base.encode64(client_proof),
       server_signature: Base.encode64(server_signature),
     }
@@ -98,7 +98,7 @@ priv struct Scram
     end
   end
 
-  priv fn parse_server_first(server_first: String) -> ServerFirst ! String
+  priv fn parse_server_first(server_first: String) -> SCRAM.ServerFirst ! String
     nonce = ""
     salt_b64 = ""
     iterations_text = ""
@@ -130,7 +130,7 @@ priv struct Scram
       fail "invalid iteration count: #{iterations_text}"
     end
 
-    ServerFirst{iterations: iterations, nonce: nonce, salt: salt}
+    SCRAM.ServerFirst{iterations: iterations, nonce: nonce, salt: salt}
   end
 
   priv fn attribute_value(part: String) -> String

@@ -7,7 +7,7 @@ alias Test.require
 
 test "computes the RFC 7677 client proof"
   proof = try require(
-    Scram.proof("pencil", "user", RFC_CLIENT_NONCE, RFC_SERVER_FIRST),
+    SCRAM.proof("pencil", "user", RFC_CLIENT_NONCE, RFC_SERVER_FIRST),
   )
   expected = "c=biws,r=rOprNGfwEbeRWgbNEkqO%hvYDpWUa2RaTCAfuxFIlj)hNlF$k0,p=dHzbZapWIk4jUhN+Ute9ytag9zjfMHgsqmmiz7AndVQ="
 
@@ -16,39 +16,39 @@ end
 
 test "computes the RFC 7677 server signature"
   proof = try require(
-    Scram.proof("pencil", "user", RFC_CLIENT_NONCE, RFC_SERVER_FIRST),
+    SCRAM.proof("pencil", "user", RFC_CLIENT_NONCE, RFC_SERVER_FIRST),
   )
   expected = "6rriTRBi23WpRR/wtup+mMhUZUn/dB5nLTJRsjl95G4="
 
   assert proof.server_signature == expected
 
   try require(
-    Scram.verify_server_final("v=" <> expected, proof.server_signature),
+    SCRAM.verify_server_final("v=" <> expected, proof.server_signature),
   )
 end
 
 test "rejects a wrong server signature"
-  assert Scram.verify_server_final("v=AAAA", "BBBB").err?()
+  assert SCRAM.verify_server_final("v=AAAA", "BBBB").err?()
 end
 
 test "rejects a server nonce that drops the client nonce"
   tampered = "r=stolen-nonce,s=W22ZaJ0SNY7soEsUEjb6gQ==,i=4096"
 
-  assert Scram.proof("pencil", "user", RFC_CLIENT_NONCE, tampered).err?()
+  assert SCRAM.proof("pencil", "user", RFC_CLIENT_NONCE, tampered).err?()
 end
 
 test "rejects malformed server-first messages"
-  assert Scram.proof("pencil", "user", RFC_CLIENT_NONCE, "garbage").err?()
+  assert SCRAM.proof("pencil", "user", RFC_CLIENT_NONCE, "garbage").err?()
 
   missing_iterations = "r=rOprNGfwEbeRWgbNEkqOabc,s=W22ZaJ0SNY7soEsUEjb6gQ=="
 
-  assert Scram.proof("pencil", "user", RFC_CLIENT_NONCE, missing_iterations)
+  assert SCRAM.proof("pencil", "user", RFC_CLIENT_NONCE, missing_iterations)
     .err?()
 end
 
 test "generated nonces are printable and distinct"
-  a = Scram.generate_nonce()
-  b = Scram.generate_nonce()
+  a = SCRAM.generate_nonce()
+  b = SCRAM.generate_nonce()
 
   assert a.length() == 24
   assert a != b

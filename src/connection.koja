@@ -48,9 +48,9 @@ struct Connection
   transaction_status: TransactionStatus
 
   @doc """
-  Opens a connection and performs the startup handshake (trust,
-  cleartext password, or SCRAM-SHA-256 as the server demands). Waits
-  until the server reports it is ready for queries.
+  Open a connection and run the startup handshake. The server picks
+  trust, cleartext password, or SCRAM-SHA-256 authentication. Wait
+  until the server reports that it is ready for queries.
   """
   fn connect(config: Config) -> Connection ! Error
     socket = TCPSocket.connect(config.host, config.port)
@@ -68,8 +68,9 @@ struct Connection
   end
 
   @doc """
-  False once a socket read or write failed, or the stream fell out of
-  sync. A closed connection fails every later call with
+  Report whether the connection is open. The connection closes when a
+  socket read or write fails, or when the stream falls out of sync. A
+  closed connection fails every later call with
   `Error.ConnectionClosed` without touching the socket. Open a new one.
   """
   fn open?(self) -> Bool
@@ -77,7 +78,7 @@ struct Connection
   end
 
   @doc """
-  True when the connection is open and not inside a transaction
+  Report whether the connection is open and not inside a transaction
   block. This is the state a pool wants before it lends the
   connection again.
   """
@@ -86,7 +87,7 @@ struct Connection
   end
 
   @doc """
-  Runs a single SQL statement and collects its result set. Returns the
+  Run a single SQL statement and collect its result set. Return the
   updated connection paired with the query outcome.
   """
   fn query(self, sql: String) -> (Connection, Result<QueryResult, Error>)
@@ -94,10 +95,10 @@ struct Connection
   end
 
   @doc """
-  Runs a single SQL statement with `$1`-style parameters via the
+  Run a single SQL statement with `$1`-style parameters through the
   extended query protocol. Parameters are typed `Value`s, and
   `Value.Null` binds SQL NULL. `params` defaults to none. Repeated
-  statements reuse the connection's prepared statement cache. Returns
+  statements reuse the connection's prepared statement cache. Return
   the updated connection paired with the query outcome.
   """
   fn execute(self, sql: String, params: List<Value> = [])
@@ -108,7 +109,8 @@ struct Connection
 
     if not self.cache.enabled?()
       payload = Message.encode_parse("", sql, oids) <>
-        Message.encode_bind("", texts) <> DESCRIBE_PORTAL <> EXECUTE <> SYNC
+        Message.encode_bind("", texts) <> Message.DESCRIBE_PORTAL <>
+        Message.EXECUTE <> Message.SYNC
 
       return self.run(payload)
     end
@@ -120,7 +122,8 @@ struct Connection
     match cached
       Option.Some(name) ->
         (conn, outcome) = self.run(
-          Message.encode_bind(name, texts) <> DESCRIBE_PORTAL <> EXECUTE <> SYNC,
+          Message.encode_bind(name, texts) <> Message.DESCRIBE_PORTAL <>
+            Message.EXECUTE <> Message.SYNC,
         )
 
         match outcome
@@ -152,11 +155,11 @@ struct Connection
   end
 
   @doc """
-  Sends a Terminate message (best effort) and closes the socket. Do
-  not use the connection value after this call.
+  Send a Terminate message, ignore a send failure, and close the
+  socket. Do not use the connection value after this call.
   """
   fn close(self) ! Error
-    _ = Wire.write_all(self.socket, TERMINATE)
+    _ = Wire.write_all(self.socket, Message.TERMINATE)
     self.socket.close() rescue e -> fail Error.IO(e.message())
   end
 
@@ -216,7 +219,8 @@ struct Connection
 
     payload = stale_close <> close_frame <>
       Message.encode_parse(name, sql, oids) <>
-      Message.encode_bind(name, texts) <> DESCRIBE_PORTAL <> EXECUTE <> SYNC
+      Message.encode_bind(name, texts) <> Message.DESCRIBE_PORTAL <>
+      Message.EXECUTE <> Message.SYNC
 
     (conn, outcome) = self.run(payload)
 
@@ -266,15 +270,6 @@ struct Connection
         collect(socket, leftover, state, status)
     end
   end
-
-  priv fn auth_method_name(kind: Int) -> String
-    match kind
-      3 -> "cleartext password"
-      5 -> "md5"
-      10 -> "sasl"
-      _ -> "authentication code #{kind}"
-    end
-  end
 end
 
 @doc """
@@ -290,9 +285,10 @@ enum TransactionStatus
 end
 
 @doc """
-The result of a successful query: column names, the rows (each a list
-of typed `Value`s decoded against the server's column types), and the
-command tag (e.g. "INSERT 0 1").
+The result of a successful query. `fields` holds the column names.
+`rows` holds the rows, each a list of typed `Value`s decoded against
+the server's column types. `tag` is the command tag, such as
+"INSERT 0 1".
 """
 struct QueryResult
   fields: List<String>
