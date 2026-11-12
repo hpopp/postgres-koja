@@ -14,7 +14,7 @@ struct Config
   user: String
 
   @doc """
-  Builds a config with no password, for servers that use trust
+  Build a config with no password, for servers that use trust
   authentication. If the server requires a password, chain
   `with_password`.
   """
@@ -23,7 +23,7 @@ struct Config
   end
 
   @doc """
-  Returns the config with the given password set.
+  Return the config with the given password set.
   """
   fn with_password(self, password: String) -> Config
     self.password = Option.Some(password)
@@ -31,7 +31,7 @@ struct Config
   end
 
   @doc """
-  Returns the config with the given statement cache size. Set 0 to
+  Return the config with the given statement cache size. Set 0 to
   turn the cache off.
   """
   fn with_statement_cache_size(self, size: Int) -> Config

@@ -63,10 +63,10 @@ priv struct Startup
 
     password = try require_password(config)
 
-    nonce = Scram.generate_nonce()
+    nonce = SCRAM.generate_nonce()
     initial = Message.encode_sasl_initial(
       "SCRAM-SHA-256",
-      Scram.first_message("", nonce),
+      SCRAM.first_message("", nonce),
     )
 
     try Wire.write_all(socket, initial)
@@ -80,7 +80,7 @@ priv struct Startup
         _ -> fail Error.Protocol("expected SASL continue message")
       end
 
-    proof = Scram.proof(password, "", nonce, server_first)
+    proof = SCRAM.proof(password, "", nonce, server_first)
       rescue e -> fail Error.AuthenticationFailed(e)
 
     try Wire.write_all(socket, Message.encode_sasl_response(proof.client_final))
@@ -97,7 +97,7 @@ priv struct Startup
         _ -> fail Error.Protocol("expected SASL final message")
       end
 
-    Scram.verify_server_final(server_final, proof.server_signature)
+    SCRAM.verify_server_final(server_final, proof.server_signature)
       rescue e -> fail Error.AuthenticationFailed(e)
 
     final_buffer
@@ -118,11 +118,11 @@ priv struct Startup
   end
 
   priv fn auth_method_name(kind: Int) -> String
-    match kind
-      3 -> "cleartext password"
-      5 -> "md5"
-      10 -> "sasl"
-      _ -> "authentication code #{kind}"
+    cond
+      kind == Message.AUTH_CLEARTEXT_PASSWORD -> "cleartext password"
+      kind == Message.AUTH_MD5_PASSWORD -> "md5"
+      kind == Message.AUTH_SASL -> "sasl"
+      else -> "authentication code #{kind}"
     end
   end
 end

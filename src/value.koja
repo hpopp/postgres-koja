@@ -5,8 +5,8 @@ plus `Null` for SQL NULL.
 
 Result columns decode from the type OID the server reports. The
 driver maps bool, the integer family, and the float family. Every
-other type (numeric, timestamps, uuid, json) passes through as
-`String` in the server's text format.
+other type, such as numeric, timestamps, uuid, and json, passes
+through as `String` in the server's text format.
 """
 enum Value
   Null
@@ -15,43 +15,51 @@ enum Value
   Float(Float)
   String(String)
 
+  # Type OIDs from the Postgres `pg_type` catalog.
+  priv const BOOL_OID: Int = 16
+  priv const FLOAT4_OID: Int = 700
+  priv const FLOAT8_OID: Int = 701
+  priv const INT2_OID: Int = 21
+  priv const INT4_OID: Int = 23
+  priv const INT8_OID: Int = 20
+
   @doc """
-  The SQL `NULL` value.
+  Return the SQL `NULL` value.
   """
   fn null -> Value
     Value.Null
   end
 
   @doc """
-  Wraps a `Bool` as a SQL value.
+  Wrap a `Bool` as a SQL value.
   """
   fn bool(v: Bool) -> Value
     Value.Bool(v)
   end
 
   @doc """
-  Wraps an `Int` as a SQL value.
+  Wrap an `Int` as a SQL value.
   """
   fn int(n: Int) -> Value
     Value.Int(n)
   end
 
   @doc """
-  Wraps a `Float` as a SQL value.
+  Wrap a `Float` as a SQL value.
   """
   fn float(f: Float) -> Value
     Value.Float(f)
   end
 
   @doc """
-  Wraps a `String` as a SQL value.
+  Wrap a `String` as a SQL value.
   """
   fn string(s: String) -> Value
     Value.String(s)
   end
 
   @doc """
-  Wraps an optional `Bool`. `None` becomes SQL NULL.
+  Wrap an optional `Bool`. `None` becomes SQL NULL.
   """
   fn opt_bool(v: Option<Bool>) -> Value
     match v
@@ -61,7 +69,7 @@ enum Value
   end
 
   @doc """
-  Wraps an optional `Int`. `None` becomes SQL NULL.
+  Wrap an optional `Int`. `None` becomes SQL NULL.
   """
   fn opt_int(n: Option<Int>) -> Value
     match n
@@ -71,7 +79,7 @@ enum Value
   end
 
   @doc """
-  Wraps an optional `Float`. `None` becomes SQL NULL.
+  Wrap an optional `Float`. `None` becomes SQL NULL.
   """
   fn opt_float(f: Option<Float>) -> Value
     match f
@@ -81,7 +89,7 @@ enum Value
   end
 
   @doc """
-  Wraps an optional `String`. `None` becomes SQL NULL.
+  Wrap an optional `String`. `None` becomes SQL NULL.
   """
   fn opt_string(s: Option<String>) -> Value
     match s
@@ -91,7 +99,7 @@ enum Value
   end
 
   @doc """
-  The `Bool` inside, or `None` for any other variant.
+  Return the `Bool` inside, or `None` for any other variant.
   """
   fn as_bool(self) -> Option<Bool>
     match self
@@ -101,7 +109,7 @@ enum Value
   end
 
   @doc """
-  The `Int` inside, or `None` for any other variant.
+  Return the `Int` inside, or `None` for any other variant.
   """
   fn as_int(self) -> Option<Int>
     match self
@@ -111,7 +119,7 @@ enum Value
   end
 
   @doc """
-  The `Float` inside, or `None` for any other variant.
+  Return the `Float` inside, or `None` for any other variant.
   """
   fn as_float(self) -> Option<Float>
     match self
@@ -121,7 +129,7 @@ enum Value
   end
 
   @doc """
-  The `String` inside, or `None` for any other variant.
+  Return the `String` inside, or `None` for any other variant.
   """
   fn as_string(self) -> Option<String>
     match self
@@ -131,36 +139,36 @@ enum Value
   end
 
   @doc """
-  The `Bool` inside, or `fallback` for any other variant.
+  Return the `Bool` inside, or `fallback` for any other variant.
   """
   fn bool_or(self, fallback: Bool) -> Bool
     self.as_bool().or(fallback)
   end
 
   @doc """
-  The `Int` inside, or `fallback` for any other variant.
+  Return the `Int` inside, or `fallback` for any other variant.
   """
   fn int_or(self, fallback: Int) -> Int
     self.as_int().or(fallback)
   end
 
   @doc """
-  The `Float` inside, or `fallback` for any other variant.
+  Return the `Float` inside, or `fallback` for any other variant.
   """
   fn float_or(self, fallback: Float) -> Float
     self.as_float().or(fallback)
   end
 
   @doc """
-  The `String` inside, or `fallback` for any other variant.
+  Return the `String` inside, or `fallback` for any other variant.
   """
   fn string_or(self, fallback: String) -> String
     self.as_string().or(fallback)
   end
 
   @doc """
-  The text wire format for a Bind parameter. `Null` becomes `None`,
-  which binds SQL NULL.
+  Encode the value in the text wire format for a Bind parameter.
+  `Null` becomes `None`, which binds SQL NULL.
   """
   fn encode(self) -> Option<String>
     match self
@@ -173,21 +181,22 @@ enum Value
   end
 
   @doc """
-  The parameter type OID declared in a Parse message. `String` and
-  `Null` declare 0, so the server infers the type from context.
+  Return the parameter type OID to declare in a Parse message.
+  `String` and `Null` declare 0, so the server infers the type from
+  context.
   """
   fn type_oid(self) -> Int
     match self
       Value.Null -> 0
-      Value.Bool(_) -> 16
-      Value.Int(_) -> 20
-      Value.Float(_) -> 701
+      Value.Bool(_) -> Value.BOOL_OID
+      Value.Int(_) -> Value.INT8_OID
+      Value.Float(_) -> Value.FLOAT8_OID
       Value.String(_) -> 0
     end
   end
 
   @doc """
-  Decodes one text-format result column against the type OID from
+  Decode one text-format result column against the type OID from
   the row description. A column the driver cannot parse as its
   declared type passes through as `String`.
   """
@@ -198,14 +207,14 @@ enum Value
         Option.None -> return Value.Null
       end
 
-    match type_oid
-      16 -> Value.Bool(text == "t")
-      20 -> Value.decode_int(text)
-      21 -> Value.decode_int(text)
-      23 -> Value.decode_int(text)
-      700 -> Value.decode_float(text)
-      701 -> Value.decode_float(text)
-      _ -> Value.String(text)
+    cond
+      type_oid == Value.BOOL_OID -> Value.Bool(text == "t")
+      type_oid == Value.INT8_OID -> Value.decode_int(text)
+      type_oid == Value.INT2_OID -> Value.decode_int(text)
+      type_oid == Value.INT4_OID -> Value.decode_int(text)
+      type_oid == Value.FLOAT4_OID -> Value.decode_float(text)
+      type_oid == Value.FLOAT8_OID -> Value.decode_float(text)
+      else -> Value.String(text)
     end
   end
 

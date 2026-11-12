@@ -11,6 +11,9 @@ alias Net.TLSError
 # non-blocking socket would block, the calling process suspends
 # cooperatively until the fd is ready, then retries.
 priv struct Wire
+  # Bytes pulled per socket read.
+  priv const READ_CHUNK: Int = 8192
+
   # Writes every byte of `data` to the socket, and loops until the
   # whole buffer is out. Returns the number of bytes written.
   fn write_all(socket: TCPSocket, data: Binary) -> Int ! Error
@@ -98,7 +101,8 @@ priv struct Wire
       return buffer
     end
 
-    chunk = socket.read(8192) rescue e -> fail Error.IO(net_message(e))
+    chunk = socket.read(Wire.READ_CHUNK)
+      rescue e -> fail Error.IO(net_message(e))
 
     if chunk.byte_size() == 0
       fail Error.ConnectionClosed
